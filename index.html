@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>變壓器即時計算器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Microsoft JhengHei', Arial, sans-serif;
+            background: linear-gradient(135deg, #e0f2fe 0%, #ddd6fe 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            padding: 30px;
+            margin-bottom: 24px;
+        }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        
+        .header h1 {
+            font-size: 28px;
+            color: #1e293b;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .badge {
+            background: #eef2ff;
+            color: #4f46e5;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        .mode-switch {
+            background: linear-gradient(135deg, #f3e8ff 0%, #fce7f3 100%);
+            padding: 16px;
+            border-radius: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        
+        .mode-info h3 {
+            font-size: 16px;
+            color: #1e293b;
+            margin-bottom: 4px;
+        }
+        
+        .mode-info p {
+            font-size: 13px;
+            color: #64748b;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #9333ea 0%, #ec4899 100%);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .section {
+            border-radius: 12px;
+            padding: 20px;
+        }
+        
+        .section-blue { background: #eff6ff; }
+        .section-green { background: #f0fdf4; }
+        .section-purple { background: #faf5ff; }
+        
+        .section h2 {
+            font-size: 18px;
+            margin-bottom: 16px;
+        }
+        
+        .section-blue h2 { color: #1e40af; }
+        .section-green h2 { color: #166534; }
+        .section-purple h2 { color: #6b21a8; }
+        
+        .form-group {
+            margin-bottom: 12px;
+        }
+        
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 4px;
+        }
+        
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        }
+        
+        .form-group input:disabled {
+            background: #f3f4f6;
+            cursor: not-allowed;
+        }
+        
+        .hint {
+            font-size: 11px;
+            margin-top: 4px;
+        }
+        
+        .hint-blue { color: #2563eb; }
+        .hint-green { color: #16a34a; }
+        .hint-purple { color: #9333ea; }
+        
+        .result-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        
+        .result-card {
+            padding: 20px;
+            border-radius: 12px;
+        }
+        
+        .result-card h3 {
+            font-size: 14px;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+        
+        .result-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #1e293b;
+            margin-bottom: 4px;
+        }
+        
+        .result-sub {
+            font-size: 12px;
+            color: #64748b;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            background: white;
+        }
+        
+        .inductance-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+        
+        .inductance-card {
+            background: white;
+            padding: 16px;
+            border-radius: 8px;
+        }
+        
+        .inductance-card p:first-child {
+            font-size: 11px;
+            color: #64748b;
+            margin-bottom: 4px;
+        }
+        
+        .inductance-value {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 2px;
+        }
+        
+        .inductance-card p:last-child {
+            font-size: 11px;
+            color: #9ca3af;
+        }
+        
+        .wire-suggest {
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 12px;
+        }
+        
+        .wire-suggest p {
+            font-size: 12px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+        
+        .wire-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 11px;
+        }
+        
+        .wire-btn {
+            padding: 4px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 11px;
+            color: white;
+            cursor: pointer;
+        }
+        
+        .wire-btn-blue { background: #3b82f6; }
+        .wire-btn-green { background: #10b981; }
+        
+        .wire-info {
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 12px;
+            font-size: 11px;
+            color: #374151;
+        }
+        
+        .wire-info p {
+            margin-bottom: 4px;
+        }
+        
+        @media (max-width: 768px) {
+            .header h1 { font-size: 22px; }
+            .grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="header">
+                <h1>
+                    <span>⚡</span>
+                    變壓器即時計算器
+                </h1>
+                <div class="badge">即時計算中</div>
+            </div>
+            
+            <div class="mode-switch">
+                <div class="mode-info">
+                    <h3>計算模式</h3>
+                    <p id="modeText">電壓→匝數</p>
+                </div>
+                <button class="btn" onclick="toggleMode()">切換模式</button>
+            </div>
+            
+            <div class="grid">
+                <!-- 磁芯參數 -->
+                <div class="section section-blue">
+                    <h2>磁芯參數</h2>
+                    <div class="form-group">
+                        <label>磁芯類型</label>
+                        <select id="coreType" onchange="calculate()">
+                            <option value="EI">EI型</option>
+                            <option value="C">C型</option>
+                            <option value="Toroid">環形</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>寬度 (mm)</label>
+                        <input type="number" id="coreWidth" value="20" onchange="calculate()">
+                        <div class="hint hint-blue" id="hintArea"></div>
+                    </div>
+                    <div class="form-group">
+                        <label>深度 (mm)</label>
+                        <input type="number" id="coreDepth" value="30" onchange="calculate()">
+                    </div>
+                    <div class="form-group">
+                        <label>高度 (mm)</label>
+                        <input type="number" id="coreHeight" value="25" onchange="calculate()">
+                        <div class="hint hint-blue" id="hintPath"></div>
+                    </div>
+                    <div class="form-group">
+                        <label>磁導率 (μᵣ)</label>
+                        <input type="number" id="permeability" value="2000" onchange="calculate()">
+                    </div>
+                </div>
+                
+                <!-- 電氣參數 -->
+                <div class="section section-green">
+                    <h2>電氣參數</h2>
+                    <div class="form-group">
+                        <label>初級電壓 (V)</label>
+                        <input type="number" id="primaryVoltage" value="220" onchange="calculate()">
+                        <div class="hint hint-green" id="hintPrimaryCurrent"></div>
+                    </div>
+                    <div class="form-group">
+                        <label id="secVoltLabel">次級電壓 (V)</label>
+                        <input type="number" id="secondaryVoltage" value="12" onchange="calculate()">
+                        <div class="hint hint-green" id="hintSecondaryCurrent"></div>
+                    </div>
+                    <div class="form-group">
+                        <label>頻率 (Hz)</label>
+                        <input type="number" id="frequency" value="50" onchange="calculate()">
+                    </div>
+                    <div class="form-group">
+                        <label>功率 (W)</label>
+                        <input type="number" id="power" value="50" onchange="calculate()">
+                    </div>
+                    <div class="form-group">
+                        <label id="priTurnLabel">初級匝數</label>
+                        <input type="number" id="primaryTurns" value="1000" onchange="calculate()">
+                        <div class="hint hint-green" id="hintPrimaryL"></div>
+                    </div>
+                    <div class="form-group">
+                        <label id="secTurnLabel">次級匝數</label>
+                        <input type="number" id="secondaryTurns" value="55" onchange="calculate()">
+                        <div class="hint hint-green" id="hintSecondaryL"></div>
+                    </div>
+                </div>
+                
+                <!-- 繞線參數 -->
+                <div class="section section-purple">
+                    <h2>繞線參數</h2>
+                    <div class="form-group">
+                        <label>窗口寬 (mm)</label>
+                        <input type="number" id="windowWidth" value="15" onchange="calculate()">
+                    </div>
+                    <div class="form-group">
+                        <label>窗口高 (mm)</label>
+                        <input type="number" id="windowHeight" value="20" onchange="calculate()">
+                        <div class="hint hint-purple" id="hintFill"></div>
+                    </div>
+                    <div class="form-group">
+                        <label>線徑 (mm)</label>
+                        <input type="number" step="0.1" id="wireGauge" value="0.5" onchange="calculate()">
+                    </div>
+                    
+                    <div class="wire-suggest" id="wireSuggest" style="display:none;">
+                        <p>建議線徑:</p>
+                        <div class="wire-item">
+                            <span id="priWireSuggest"></span>
+                            <button class="wire-btn wire-btn-blue" onclick="applyWire('primary')">套用</button>
+                        </div>
+                        <div class="wire-item">
+                            <span id="secWireSuggest"></span>
+                            <button class="wire-btn wire-btn-green" onclick="applyWire('secondary')">套用</button>
+                        </div>
+                    </div>
+                    
+                    <div class="wire-info" id="wireInfo" style="display:none;"></div>
+                </div>
+            </div>
+            
+            <!-- 結果顯示 -->
+            <div id="results" style="display:none;">
+                <div class="result-grid">
+                    <div class="result-card" id="fluxCard">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <h3>磁通密度</h3>
+                            <span class="status-badge" id="fluxStatus"></span>
+                        </div>
+                        <div class="result-value" id="fluxValue"></div>
+                        <div class="result-sub">理想: 0.8-1.4 T</div>
+                    </div>
+                    
+                    <div class="result-card" style="background: linear-gradient(135deg, #fef3c7 0%, #fed7aa 100%);">
+                        <h3>空載電流</h3>
+                        <div class="result-value" id="noLoadValue"></div>
+                        <div class="result-sub" id="noLoadPercent"></div>
+                    </div>
+                </div>
+                
+                <div class="section" style="background: linear-gradient(135deg, #eef2ff 0%, #faf5ff 100%);">
+                    <h2 style="color:#4f46e5; margin-bottom:16px;">電感與感抗</h2>
+                    <div class="inductance-grid">
+                        <div class="inductance-card">
+                            <p>初級電感 L₁</p>
+                            <div class="inductance-value" style="color:#4f46e5;" id="priL"></div>
+                            <p id="priXL"></p>
+                        </div>
+                        <div class="inductance-card">
+                            <p>次級電感 L₂</p>
+                            <div class="inductance-value" style="color:#16a34a;" id="secL"></div>
+                            <p id="secXL"></p>
+                        </div>
+                        <div class="inductance-card">
+                            <p>互感 M</p>
+                            <div class="inductance-value" style="color:#9333ea;" id="mutL"></div>
+                            <p>耦合: 0.98</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let mode = 'fromVoltage';
+        let lastResults = null;
+        
+        function toggleMode() {
+            mode = mode === 'fromVoltage' ? 'fromTurns' : 'fromVoltage';
+            document.getElementById('modeText').textContent = mode === 'fromVoltage' ? '電壓→匝數' : '匝數→電壓';
+            
+            const secVolt = document.getElementById('secondaryVoltage');
+            const priTurns = document.getElementById('primaryTurns');
+            const secTurns = document.getElementById('secondaryTurns');
+            
+            if (mode === 'fromVoltage') {
+                secVolt.disabled = false;
+                priTurns.disabled = true;
+                secTurns.disabled = true;
+                document.getElementById('secVoltLabel').textContent = '次級電壓 (V)';
+                document.getElementById('priTurnLabel').textContent = '初級匝數 (自動)';
+                document.getElementById('secTurnLabel').textContent = '次級匝數 (自動)';
+            } else {
+                secVolt.disabled = true;
+                priTurns.disabled = false;
+                secTurns.disabled = false;
+                document.getElementById('secVoltLabel').textContent = '次級電壓 (V) (自動)';
+                document.getElementById('priTurnLabel').textContent = '初級匝數';
+                document.getElementById('secTurnLabel').textContent = '次級匝數';
+            }
+            
+            calculate();
+        }
+        
+        function calculate() {
+            const inp = {
+                coreWidth: parseFloat(document.getElementById('coreWidth').value) || 20,
+                coreDepth: parseFloat(document.getElementById('coreDepth').value) || 30,
+                coreHeight: parseFloat(document.getElementById('coreHeight').value) || 25,
+                permeability: parseFloat(document.getElementById('permeability').value) || 2000,
+                primaryVoltage: parseFloat(document.getElementById('primaryVoltage').value) || 220,
+                secondaryVoltage: parseFloat(document.getElementById('secondaryVoltage').value) || 12,
+                frequency: parseFloat(document.getElementById('frequency').value) || 50,
+                power: parseFloat(document.getElementById('power').value) || 50,
+                primaryTurns: parseFloat(document.getElementById('primaryTurns').value) || 1000,
+                secondaryTurns: parseFloat(document.getElementById('secondaryTurns').value) || 55,
+                wireGauge: parseFloat(document.getElementById('wireGauge').value) || 0.5,
+                windowWidth: parseFloat(document.getElementById('windowWidth').value) || 15,
+                windowHeight: parseFloat(document.getElementById('windowHeight').value) || 20
+            };
+            
+            // 檢查必要的輸入值
+            if (!inp.coreWidth || !inp.coreDepth || !inp.frequency || !inp.primaryVoltage) {
+                return;
+            }
+            
+            const coreArea = (inp.coreWidth * inp.coreDepth) / 100;
+            
+            if (mode === 'fromVoltage') {
+                const targetFluxDensity = 1.2;
+                inp.primaryTurns = Math.round(inp.primaryVoltage / (4.44 * inp.frequency * coreArea * targetFluxDensity));
+                inp.secondaryTurns = Math.round(inp.secondaryVoltage / (4.44 * inp.frequency * coreArea * targetFluxDensity));
+                
+                // 確保匝數至少為1
+                if (inp.primaryTurns < 1) inp.primaryTurns = 1;
+                if (inp.secondaryTurns < 1) inp.secondaryTurns = 1;
+                
+                document.getElementById('primaryTurns').value = inp.primaryTurns;
+                document.getElementById('secondaryTurns').value = inp.secondaryTurns;
+            } else {
+                if (inp.primaryTurns > 0 && inp.secondaryTurns > 0) {
+                    inp.secondaryVoltage = parseFloat((inp.primaryVoltage * inp.secondaryTurns / inp.primaryTurns).toFixed(2));
+                    document.getElementById('secondaryVoltage').value = inp.secondaryVoltage;
+                }
+            }
+            
+            // 確保所有計算值有效
+            if (inp.primaryTurns <= 0 || inp.secondaryTurns <= 0) return;
+            
+            const turnsRatio = inp.primaryTurns / inp.secondaryTurns;
+            const primaryCurrent = inp.power / inp.primaryVoltage;
+            const secondaryCurrent = inp.power / inp.secondaryVoltage;
+            const fluxDensity = inp.primaryVoltage / (4.44 * inp.frequency * inp.primaryTurns * coreArea);
+            const magneticPathLength = 2 * (inp.coreWidth + inp.coreHeight);
+            
+            const mu0 = 4 * Math.PI * 1e-7;
+            const primaryInductance = (mu0 * inp.permeability * Math.pow(inp.primaryTurns, 2) * coreArea * 1e-4) / (magneticPathLength * 1e-2);
+            const secondaryInductance = (mu0 * inp.permeability * Math.pow(inp.secondaryTurns, 2) * coreArea * 1e-4) / (magneticPathLength * 1e-2);
+            const mutualInductance = 0.98 * Math.sqrt(primaryInductance * secondaryInductance);
+            
+            const primaryReactance = 2 * Math.PI * inp.frequency * primaryInductance;
+            const secondaryReactance = 2 * Math.PI * inp.frequency * secondaryInductance;
+            const noLoadCurrent = primaryReactance > 0 ? (inp.primaryVoltage / primaryReactance) * 1000 : 0;
+            
+            const primaryWireLength = inp.primaryTurns * 2 * (inp.windowWidth + inp.windowHeight) / 100;
+            const secondaryWireLength = inp.secondaryTurns * 2 * (inp.windowWidth + inp.windowHeight) / 100;
+            
+            const copperResistivity = 0.0175;
+            const wireArea = Math.PI * Math.pow(inp.wireGauge / 2, 2);
+            const primaryResistance = (copperResistivity * primaryWireLength) / wireArea;
+            const secondaryResistance = (copperResistivity * secondaryWireLength) / wireArea;
+            
+            const suggestedPrimaryWire = Math.sqrt((4 * primaryCurrent) / (Math.PI * 4)) * 1000;
+            const suggestedSecondaryWire = Math.sqrt((4 * secondaryCurrent) / (Math.PI * 4)) * 1000;
+            
+            const primaryWireArea = inp.primaryTurns * Math.PI * Math.pow(inp.wireGauge / 2, 2);
+            const secondaryWireArea = inp.secondaryTurns * Math.PI * Math.pow(inp.wireGauge / 2, 2);
+            const fillFactor = ((primaryWireArea + secondaryWireArea) / (inp.windowWidth * inp.windowHeight)) * 100;
+            
+            lastResults = {
+                coreArea, turnsRatio, primaryCurrent, secondaryCurrent, fluxDensity, magneticPathLength,
+                primaryInductance, secondaryInductance, mutualInductance, primaryReactance, secondaryReactance,
+                noLoadCurrent, primaryResistance, secondaryResistance, primaryWireLength, secondaryWireLength,
+                suggestedPrimaryWire, suggestedSecondaryWire, fillFactor
+            };
+            
+            updateDisplay();
+        }
+        
+        function updateDisplay() {
+            const r = lastResults;
+            if (!r) return;
+            
+            document.getElementById('hintArea').textContent = `面積: ${r.coreArea.toFixed(2)} cm²`;
+            document.getElementById('hintPath').textContent = `磁路: ${r.magneticPathLength.toFixed(1)} cm`;
+            document.getElementById('hintPrimaryCurrent').textContent = `電流: ${r.primaryCurrent.toFixed(3)} A`;
+            document.getElementById('hintSecondaryCurrent').textContent = `電流: ${r.secondaryCurrent.toFixed(3)} A`;
+            document.getElementById('hintPrimaryL').textContent = `L: ${(r.primaryInductance * 1000).toFixed(2)} mH`;
+            document.getElementById('hintSecondaryL').textContent = `比: ${r.turnsRatio.toFixed(2)}:1 | L: ${(r.secondaryInductance * 1000).toFixed(2)} mH`;
+            
+            const fillStatus = r.fillFactor < 30 ? '充足' : r.fillFactor <= 50 ? '理想' : r.fillFactor <= 70 ? '緊湊' : '擁擠';
+            document.getElementById('hintFill').textContent = `利用率: ${r.fillFactor.toFixed(1)}% (${fillStatus})`;
+            
+            document.getElementById('priWireSuggest').textContent = `初級: ${r.suggestedPrimaryWire.toFixed(2)} mm`;
+            document.getElementById('secWireSuggest').textContent = `次級: ${r.suggestedSecondaryWire.toFixed(2)} mm`;
+            document.getElementById('wireSuggest').style.display = 'block';
+            
+            document.getElementById('wireInfo').innerHTML = `
+                <p>初級: ${r.primaryWireLength.toFixed(1)}m / ${r.primaryResistance.toFixed(2)}Ω</p>
+                <p>次級: ${r.secondaryWireLength.toFixed(1)}m / ${r.secondaryResistance.toFixed(2)}Ω</p>
+            `;
+            document.getElementById('wireInfo').style.display = 'block';
+            
+            const fluxStatus = r.fluxDensity < 0.8 ? {text: '偏低', bg: '#dbeafe'} : 
+                              r.fluxDensity <= 1.4 ? {text: '理想', bg: '#dcfce7'} :
+                              r.fluxDensity <= 1.7 ? {text: '偏高', bg: '#fef3c7'} :
+                              {text: '過高', bg: '#fee2e2'};
+            
+            document.getElementById('fluxCard').style.background = fluxStatus.bg;
+            document.getElementById('fluxStatus').textContent = fluxStatus.text;
+            document.getElementById('fluxValue').textContent = `${r.fluxDensity.toFixed(4)} T`;
+            document.getElementById('noLoadValue').textContent = `${r.noLoadCurrent.toFixed(2)} mA`;
+            
+            const noLoadPercent = r.primaryCurrent > 0 ? ((r.noLoadCurrent / 1000) / r.primaryCurrent * 100).toFixed(1) : '0';
+            document.getElementById('noLoadPercent').textContent = `約額定的 ${noLoadPercent}%`;
+            
+            document.getElementById('priL').textContent = `${(r.primaryInductance * 1000).toFixed(2)} mH`;
+            document.getElementById('priXL').textContent = `XL: ${r.primaryReactance.toFixed(2)} Ω`;
+            document.getElementById('secL').textContent = `${(r.secondaryInductance * 1000).toFixed(2)} mH`;
+            document.getElementById('secXL').textContent = `XL: ${r.secondaryReactance.toFixed(2)} Ω`;
+            document.getElementById('mutL').textContent = `${(r.mutualInductance * 1000).toFixed(2)} mH`;
+            
+            document.getElementById('results').style.display = 'block';
+        }
+        
+        function applyWire(type) {
+            const wire = type === 'primary' ? lastResults.suggestedPrimaryWire : lastResults.suggestedSecondaryWire;
+            document.getElementById('wireGauge').value = wire.toFixed(2);
+            calculate();
+        }
+        
+        // 初始計算
+        calculate();
+    </script>
+</body>
+</html>
