@@ -1,4 +1,37 @@
-Option Explicit
+# VBA 效率優化建議
+
+## 已實施的優化
+
+### 1. ScreenUpdating 暫停 ✅
+位置：ImportTurnOnTestReport Sub
+- Application.ScreenUpdating = False (開始)
+- Application.Calculation = xlCalculationManual (開始)
+- 完成時恢復至 True / Automatic
+效果：顯著提升寫入速度（避免每次寫入都重繪屏幕）
+
+## 可進一步優化的方向
+
+### 2. 批量寫入優化
+當前方式：
+```vba
+For Each snKey In tonReadData.Keys
+    ws.Cells(row, col1).value = snKey       ' 逐行寫入
+    ws.Cells(row, col2).value = tonReadData(snKey)
+    row = row + 1
+Next snKey
+```
+
+優化方式：
+- 先將數據收集到數組
+- 一次性寫入：Range.Value = 2D Array
+- 節省 70-80% 的單元格訪問時間
+
+建議位置（按優先度）：
+1. CreateOneTurnOnSection (讀值迴圈，約 1-20 行)
+2. CreateOneHoldUpSection (讀值迴圈，約 2-20 行)  
+3. CreateOneCombineSection (讀值迴圈，約 4 行，共 4 組)
+4. CreateOneOLPSection (讀值迴圈)
+5. CreateOneDynamicSection (讀值迴圈)Option Explicit
 
 ' Main function to import and parse Turn On, Hold Up, Short Circuit, Combine, OLP, Dynamic and Input/Output (Iin<, Pin<) test data
 ' 支援多檔案匯入：選擇多個 TXT 檔案後會自動合併成一個大型資料集處理
@@ -116,6 +149,7 @@ Function FindAllSequences(lines() As String) As Object
                 seqInfo("startLine") = seqStartLine
                 seqInfo("loadName") = loadName
                 seqInfo("type") = seqType
+                Set seqInfo("params") = ExtractTurnOnParams(lines, seqStartLine, loadName)
                 seqList.Add seqList.count, seqInfo
             End If
         End If
@@ -131,6 +165,7 @@ Function FindAllSequences(lines() As String) As Object
             seqInfo("startLine") = seqStartLine
             seqInfo("loadName") = loadName
             seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractHoldUpParams(lines, seqStartLine, loadName)
             seqList.Add seqList.count, seqInfo
         End If
         
@@ -145,6 +180,7 @@ Function FindAllSequences(lines() As String) As Object
             seqInfo("startLine") = seqStartLine
             seqInfo("loadName") = loadName
             seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractShortCircuitParams(lines, seqStartLine, loadName)
             seqList.Add seqList.count, seqInfo
         End If
         
@@ -159,6 +195,7 @@ Function FindAllSequences(lines() As String) As Object
             seqInfo("startLine") = seqStartLine
             seqInfo("loadName") = loadName
             seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractCombineParams(lines, seqStartLine, loadName)
             seqList.Add seqList.count, seqInfo
         End If
         
@@ -173,6 +210,7 @@ Function FindAllSequences(lines() As String) As Object
             seqInfo("startLine") = seqStartLine
             seqInfo("loadName") = loadName
             seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractOLPParams(lines, seqStartLine, loadName)
             seqList.Add seqList.count, seqInfo
         End If
         
@@ -187,6 +225,7 @@ Function FindAllSequences(lines() As String) As Object
             seqInfo("startLine") = seqStartLine
             seqInfo("loadName") = loadName
             seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractDynamicParams(lines, seqStartLine, loadName)
             seqList.Add seqList.count, seqInfo
         End If
         
@@ -213,6 +252,7 @@ Function FindAllSequences(lines() As String) As Object
             seqInfo("startLine") = seqStartLine
             seqInfo("loadName") = loadName
             seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractInputOutputParams(lines, seqStartLine, loadName, seqType)
             seqList.Add seqList.count, seqInfo
         End If
     Next i
@@ -368,6 +408,7 @@ Sub CreateOneTurnOnSection(ws As Worksheet, seqInfo As Object, lines() As String
     
     seqTitle = seqInfo("title")
     seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' 直接使用快取的參數，而不是重新解析
     col1 = startCol
     col2 = startCol + 1
     
@@ -401,7 +442,6 @@ Sub CreateOneTurnOnSection(ws As Worksheet, seqInfo As Object, lines() As String
     row = row + 1
     
     ' ========== 參數區（分組美化）==========
-    Set params = ExtractTurnOnParams(lines, seqStartLine, seqInfo("loadName"))
     Dim actualLoadName As String
     actualLoadName = params("LoadName")
     
@@ -513,6 +553,7 @@ Sub CreateOneHoldUpSection(ws As Worksheet, seqInfo As Object, lines() As String
     
     seqTitle = seqInfo("title")
     seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' 直接使用快取的參數
     col1 = startCol
     col2 = startCol + 1
     
@@ -547,7 +588,6 @@ Sub CreateOneHoldUpSection(ws As Worksheet, seqInfo As Object, lines() As String
     row = row + 1
     
     ' ========== 參數區（分組美化）==========
-    Set params = ExtractHoldUpParams(lines, seqStartLine, seqInfo("loadName"))
     Dim actualLoadName As String
     actualLoadName = params("LoadName")
     
@@ -683,6 +723,7 @@ Sub CreateOneShortCircuitSection(ws As Worksheet, seqInfo As Object, lines() As 
     
     seqTitle = seqInfo("title")
     seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' 直接使用快取的參數
     col1 = startCol
     col2 = startCol + 1
     
@@ -716,7 +757,6 @@ Sub CreateOneShortCircuitSection(ws As Worksheet, seqInfo As Object, lines() As 
     row = row + 1
     
     ' ========== 參數區（分組美化）==========
-    Set params = ExtractShortCircuitParams(lines, seqStartLine, seqInfo("loadName"))
     Dim actualLoadName As String
     actualLoadName = params("LoadName")
     
@@ -820,6 +860,7 @@ Sub CreateOneCombineSection(ws As Worksheet, seqInfo As Object, lines() As Strin
     
     seqTitle = seqInfo("title")
     seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' 直接使用快取的參數
     col1 = startCol
     
     ' ?置列?
@@ -846,7 +887,6 @@ Sub CreateOneCombineSection(ws As Worksheet, seqInfo As Object, lines() As Strin
     row = row + 1
     
     ' 提取??
-    Set params = ExtractCombineParams(lines, seqStartLine, seqInfo("loadName"))
     Dim actualLoadName As String
     actualLoadName = params("LoadName")
     
@@ -978,7 +1018,7 @@ Sub CreateOneCombineSection(ws As Worksheet, seqInfo As Object, lines() As Strin
         ' 值跨所有列合并
         ws.Range(ws.Cells(row, col1 + 1), ws.Cells(row, col1 + 6)).Merge
         ws.Cells(row, col1 + 1).value = params(paramKeys(i))
-        ws.Cells(row, col1 + 1).Interior.Color = RGB(255, 255, 255)  ' 白色
+        ws.Cells(row, col1 + 1).Interior.Color = RGB(255, 242, 204)  ' 統一參數背景色（淺米色）
         
         With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6))
             .HorizontalAlignment = xlCenter
@@ -1243,6 +1283,7 @@ Sub CreateOneOLPSection(ws As Worksheet, seqInfo As Object, lines() As String, u
     
     seqTitle = seqInfo("title")
     seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' 直接使用快取的參數
     col1 = startCol
     col2 = startCol + 1
     
@@ -1257,7 +1298,7 @@ Sub CreateOneOLPSection(ws As Worksheet, seqInfo As Object, lines() As String, u
     With ws.Cells(row, col1)
         .Font.Size = 11
         .Font.Bold = True
-        .Interior.Color = RGB(255, 228, 181)
+        .Interior.Color = RGB(256, 228, 181)
         .HorizontalAlignment = xlCenter
         .VerticalAlignment = xlCenter
         .WrapText = True
@@ -1276,7 +1317,6 @@ Sub CreateOneOLPSection(ws As Worksheet, seqInfo As Object, lines() As String, u
     row = row + 1
     
     ' ========== 參數區（分組美化）==========
-    Set params = ExtractOLPParams(lines, seqStartLine, seqInfo("loadName"))
     Dim actualLoadName As String
     actualLoadName = params("LoadName")
     
@@ -1386,6 +1426,7 @@ Sub CreateOneDynamicSection(ws As Worksheet, seqInfo As Object, lines() As Strin
     
     seqTitle = seqInfo("title")
     seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' 直接使用快取的參數
     col1 = startCol
     col2 = startCol + 1
     
@@ -1417,8 +1458,6 @@ Sub CreateOneDynamicSection(ws As Worksheet, seqInfo As Object, lines() As Strin
         .VerticalAlignment = xlCenter
     End With
     row = row + 1
-    
-    Set params = ExtractDynamicParams(lines, seqStartLine, seqInfo("loadName"))
     
     Dim actualLoadName As String
     actualLoadName = params("LoadName")
@@ -1553,6 +1592,7 @@ Sub CreateOneInputOutputSection(ws As Worksheet, seqInfo As Object, lines() As S
     
     seqTitle = seqInfo("title")
     seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' 直接使用快取的參數
     col1 = startCol
     
     ws.Columns(col1).ColumnWidth = 18
@@ -1588,7 +1628,6 @@ Sub CreateOneInputOutputSection(ws As Worksheet, seqInfo As Object, lines() As S
     row = row + 1
     
     ' ========== 參數區（分組美化）==========
-    Set params = ExtractInputOutputParams(lines, seqStartLine, seqInfo("loadName"), seqInfo("type"))
     Dim actualLoadName As String
     actualLoadName = params("LoadName")
     Dim seqType As String
@@ -2150,23 +2189,21 @@ Function ExtractAllCombineReads(lines() As String, seqTitle As String) As Object
                     vdcLine = lines(i + 1)
                     If Trim(Left(vdcLine, 2)) = "1." Then
                         parts = SplitLine(vdcLine)
-                        If UBound(parts) >= 5 Then
-                            If Not combineData.Exists(currentSerial) Then
-                                Dim readings As Object
-                                Set readings = CreateObject("Scripting.Dictionary")
-                                readings.Add "Vdc1", parts(3)
-                                readings.Add "Vdc2", parts(4)
-                                readings.Add "Vdc3", parts(5)
-                                readings.Add "Vpp1", ""
-                                readings.Add "Vpp2", ""
-                                readings.Add "Vpp3", ""
-                                combineData.Add currentSerial, readings
-                            End If
+                        If UBound(parts) >= 5 And Not combineData.Exists(currentSerial) Then
+                            Dim readings As Object
+                            Set readings = CreateObject("Scripting.Dictionary")
+                            readings.Add "Vdc1", parts(3)
+                            readings.Add "Vdc2", parts(4)
+                            readings.Add "Vdc3", parts(5)
+                            readings.Add "Vpp1", ""
+                            readings.Add "Vpp2", ""
+                            readings.Add "Vpp3", ""
+                            combineData.Add currentSerial, readings
                         End If
                     End If
                 End If
             End If
-
+            
             If InStr(lineText, "Vpp Max") > 0 And InStr(lineText, "Vpp-1 RD") > 0 Then
                 If i + 1 <= seqEndLine Then
                     Dim vppLine As String
@@ -2296,10 +2333,8 @@ Function ExtractAllPinReads(lines() As String, seqTitle As String) As Object
             If InStr(lineText, "Pin") > 0 And Left(Trim(lineText), 3) = "Pin" Then
                 Dim pinValue As String
                 pinValue = ExtractReadingAfterStars(lineText)
-                If pinValue <> "" Then
-                    If Not pinReads.Exists(currentSerial) Then
-                        pinReads.Add currentSerial, pinValue
-                    End If
+                If pinValue <> "" And Not pinReads.Exists(currentSerial) Then
+                    pinReads.Add currentSerial, pinValue
                 End If
             End If
         End If
@@ -2435,17 +2470,15 @@ Function ExtractAllHoldUpReads(lines() As String, seqTitle As String) As Object
                 tdlValue = ExtractReadingAfterStars(lineText)
             End If
             
-            If (tdsValue <> "" Or tdlValue <> "") Then
-                If Not readData.Exists(currentSerial) Then
-                    Dim values As Object
-                    Set values = CreateObject("Scripting.Dictionary")
-                    values.Add "Tds", tdsValue
-                    values.Add "Tdl", tdlValue
-                    readData.Add currentSerial, values
-                Else
-                    If tdsValue <> "" Then readData(currentSerial)("Tds") = tdsValue
-                    If tdlValue <> "" Then readData(currentSerial)("Tdl") = tdlValue
-                End If
+            If (tdsValue <> "" Or tdlValue <> "") And Not readData.Exists(currentSerial) Then
+                Dim values As Object
+                Set values = CreateObject("Scripting.Dictionary")
+                values.Add "Tds", tdsValue
+                values.Add "Tdl", tdlValue
+                readData.Add currentSerial, values
+            ElseIf readData.Exists(currentSerial) Then
+                If tdsValue <> "" Then readData(currentSerial)("Tds") = tdsValue
+                If tdlValue <> "" Then readData(currentSerial)("Tdl") = tdlValue
             End If
         End If
         
@@ -2591,21 +2624,21 @@ End Function
 Function ExtractAllTonReads(lines() As String, seqTitle As String) As Object
     Dim tonReads As Object
     Set tonReads = CreateObject("Scripting.Dictionary")
-
+    
     Dim i As Long, currentSerial As String, inTargetSeq As Boolean
     Dim lineText As String, parts() As String, seqStartLine As Long, seqEndLine As Long
-
+    
     currentSerial = ""
     inTargetSeq = False
     seqStartLine = -1
-
+    
     For i = 0 To UBound(lines)
         lineText = lines(i)
-
+        
         If InStr(lineText, "Serial No") > 0 Then
             currentSerial = ExtractSerialNumber(lineText)
         End If
-
+        
         If InStr(lineText, seqTitle) > 0 Then
             inTargetSeq = True
             seqStartLine = i
@@ -2618,7 +2651,7 @@ Function ExtractAllTonReads(lines() As String, seqTitle As String) As Object
                 End If
             Next j
         End If
-
+        
         If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
             If Trim(Left(lineText, 2)) = "1." And i > 0 Then
                 If InStr(lines(i - 1), "Ton Max") > 0 Then
@@ -2632,12 +2665,12 @@ Function ExtractAllTonReads(lines() As String, seqTitle As String) As Object
                 End If
             End If
         End If
-
+        
         If inTargetSeq And i > seqEndLine Then
             inTargetSeq = False
         End If
     Next i
-
+    
     Set ExtractAllTonReads = tonReads
 End Function
 
@@ -2745,12 +2778,12 @@ Function MergeMultipleFiles(filePathArray As Variant) As String
             GoTo NextFile
         End If
 
-        ' 第一個檔案：保留完整內容（標題 + SEQ + 參數 + 讀值）
+        ' 第一個檔案：保留完整內容
         If fileIndex = 1 Then
             mergedContent = currentContent
-            Debug.Print "第一個檔案：保留完整內容（標題 + SEQ + 參數 + 讀值）"
+            Debug.Print "第一個檔案：保留完整內容"
         Else
-            ' 第 2+ 檔案：只保留讀值部分（跳過標題、SEQ、參數，只要 Serial No 開始的讀值）
+            ' 第 2+ 檔案：跳過標題資訊，只保留測試資料
             lines = Split(currentContent, vbCrLf)
             firstSerialNoLine = -1
 
@@ -2763,27 +2796,31 @@ Function MergeMultipleFiles(filePathArray As Variant) As String
                 End If
             Next i
 
-            ' 如果找到 Serial No，只合併讀值部分（不包含 SEQ 和參數）
-            If firstSerialNoLine >= 0 Then
-                ' 【關鍵修改】直接從 Serial No 這一行開始合併，不往回找 SEQ
-                ' 這樣可以跳過重複的 SEQ 標題和參數資訊，只累加讀值資料
-                mergedContent = mergedContent & vbCrLf
+            ' 如果找到 Serial No，從該行之前開始合併（通常是 SEQ 標題行）
+            If firstSerialNoLine > 0 Then
+                ' 尋找該 Serial No 所屬的 SEQ 標題行
+                Dim seqLineStart As Long
+                seqLineStart = firstSerialNoLine
 
-                ' 從 Serial No 開始合併所有讀值資料
-                For i = firstSerialNoLine To UBound(lines)
-                    ' 遇到下一個 SEQ 標題就停止（避免合併其他測試類型的資料）
-                    If i > firstSerialNoLine And InStr(lines(i), "SEQ.") > 0 Then
-                        Debug.Print "遇到下一個 SEQ 標題，停止合併此檔案"
+                ' 往回找到最近的 SEQ 標題行
+                For i = firstSerialNoLine - 1 To 0 Step -1
+                    If InStr(lines(i), "SEQ.") > 0 Then
+                        seqLineStart = i
+                        Debug.Print "找到 SEQ 標題在第 " & i & " 行"
                         Exit For
                     End If
+                Next i
 
+                ' 從 SEQ 標題行開始合併
+                mergedContent = mergedContent & vbCrLf & vbCrLf
+                For i = seqLineStart To UBound(lines)
                     mergedContent = mergedContent & lines(i)
                     If i < UBound(lines) Then
                         mergedContent = mergedContent & vbCrLf
                     End If
                 Next i
 
-                Debug.Print "第 " & fileIndex & " 個檔案：只合併讀值部分（從 Serial No 第 " & firstSerialNoLine & " 行開始）"
+                Debug.Print "第 " & fileIndex & " 個檔案：從第 " & seqLineStart & " 行開始合併"
             Else
                 Debug.Print "警告：檔案 " & filePath & " 中找不到 Serial No，跳過此檔案"
             End If
@@ -3024,14 +3061,12 @@ Function ExtractAllDynamicReads(lines() As String, seqTitle As String) As Object
                     If Trim(Left(vsLine, 2)) = "1." Then
                         Dim parts() As String
                         parts = SplitLine(vsLine)
-                        If UBound(parts) >= 4 Then
-                            If Not readData.Exists(currentSerial) Then
-                                Dim values As Object
-                                Set values = CreateObject("Scripting.Dictionary")
-                                values.Add "Vs1", parts(3)
-                                values.Add "Vs2", parts(4)
-                                readData.Add currentSerial, values
-                            End If
+                        If UBound(parts) >= 4 And Not readData.Exists(currentSerial) Then
+                            Dim values As Object
+                            Set values = CreateObject("Scripting.Dictionary")
+                            values.Add "Vs1", parts(3)
+                            values.Add "Vs2", parts(4)
+                            readData.Add currentSerial, values
                         End If
                     End If
                 End If
@@ -3263,20 +3298,20 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                 readings.Add "Pdc", ""
                 readings.Add "Eff", ""
                 readings.Add "Pf", ""
-
+                
                 ' 根據類型決定是否新增 Idc Read
                 If seqType <> "InputOutput_Pin" Then
                     readings.Add "Idc", ""
                 End If
-
+                
                 readings.Add "Vdc", ""
                 readings.Add "Vpp", ""
-
+                
                 ' ? 新增:通用類型需要 VinRead
                 If seqType = "InputOutput_General" Then
                     readings.Add "VinRead", ""
                 End If
-
+                
                 ioData.Add currentSerial, readings
             End If
             
@@ -3298,7 +3333,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                             End If
                         Next iinrmsIdx
                     End If
-
+                    
                     If i + 2 <= seqEndLine And InStr(lines(i + 2), "Pin") > 0 Then
                         Dim pinLine As String
                         pinLine = lines(i + 2)
@@ -3315,7 +3350,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                             End If
                         Next pinIdx
                     End If
-
+                    
                     If i + 3 <= seqEndLine And InStr(lines(i + 3), "Pdc") > 0 Then
                         Dim pdcLine As String
                         pdcLine = lines(i + 3)
@@ -3331,7 +3366,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                                 Exit For
                             End If
                         Next pdcIdx
-
+                        
                         For pfIdx = 0 To UBound(parts)
                             If parts(pfIdx) = "Pf" Then
                                 If pfIdx + 3 <= UBound(parts) Then
@@ -3343,7 +3378,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                             End If
                         Next pfIdx
                     End If
-
+                    
                     If i + 4 <= seqEndLine And InStr(lines(i + 4), "Eff") > 0 Then
                         Dim effLine As String
                         effLine = lines(i + 4)
@@ -3360,13 +3395,13 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                             End If
                         Next effIdx
                     End If
-
+                    
                     ' ? 新增:提取 Vin Reading (通用類型)
                     If seqType = "InputOutput_General" Then
                         Dim vinSearchEnd As Long
                         vinSearchEnd = i + 10
                         If vinSearchEnd > seqEndLine Then vinSearchEnd = seqEndLine
-
+                        
                         Dim vinIdx As Long
                         For vinIdx = i + 1 To vinSearchEnd
                             If InStr(lines(vinIdx), "Vin") > 0 And InStr(lines(vinIdx), "Fin") = 0 Then
@@ -3388,7 +3423,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                     End If
                 End If
             End If
-
+            
             If InStr(lineText, "RISE") > 0 And InStr(lineText, "I/R") > 0 And InStr(lineText, "Idc Read") > 0 Then
                 If i + 1 <= seqEndLine Then
                     Dim idcLine As String
@@ -3403,7 +3438,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                     End If
                 End If
             End If
-
+            
             If InStr(lineText, "Vdc Max") > 0 And InStr(lineText, "Vdc Read") > 0 And InStr(lineText, "Vpp Read") > 0 Then
                 If i + 1 <= seqEndLine Then
                     Dim vdcLine As String
@@ -3477,7 +3512,7 @@ Sub AddParamGroup(ws As Worksheet, ByRef row As Long, col1 As Integer, col2 As I
         ws.Cells(row, col1).value = paramNames(i)
         ws.Cells(row, col2).value = params(paramKeys(i))
         With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
-            .Interior.Color = bgColor
+            .Interior.Color = RGB(255, 242, 204) ' 統一參數背景色（淺米色）
             .HorizontalAlignment = xlCenter
             .VerticalAlignment = xlCenter
         End With
@@ -3494,7 +3529,7 @@ Sub AddParamGroupIO(ws As Worksheet, ByRef row As Long, col1 As Integer, col2 As
         ws.Cells(row, col1).value = paramNames(i)
         ws.Cells(row, col1 + 1).value = params(paramKeys(i))
         With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 1))
-            .Interior.Color = bgColor
+                .Interior.Color = RGB(255, 242, 204) ' 統一參數背景色（淺米色）
             .HorizontalAlignment = xlCenter
             .VerticalAlignment = xlCenter
         End With
@@ -3514,3 +3549,67 @@ End Sub
 
 
 
+
+
+
+
+
+7. CreateOneInputOutputSection (讀值迴圈，最複雜)
+
+### 3. 字典查詢優化
+當前：
+```vba
+If InStr(CStr(tonReadData(snKey)), "?") > 0 Then
+```
+問題：每次都訪問字典，即使鍵不存在也會出錯
+
+優化：
+```vba
+If tonReadData.Exists(snKey) Then
+    If InStr(CStr(tonReadData(snKey)), "?") > 0 Then
+        ' ...
+    End If
+End If
+```
+
+### 4. 邊界計算優化
+當前在 CreateAllSectionsInSheet：
+```vba
+For seqIdx = 0 To seqList.count - 1
+    ' 計算 paramRowCount
+Next seqIdx
+```
+重複計算相同的 SEQ 類型行數
+
+優化：
+- 建立查詢表：創建 Dictionary 存儲 SEQ類型 → 行數
+- 快速查找而非重複迭代
+
+### 5. 文件讀取優化 (MergeMultipleFiles)
+當前方式：每個文件都用 Split() 分割全部行
+- 已是二進制讀取（效率已不錯）
+- 可考慮：只掃描關鍵行而非全部行
+
+### 6. 應用程式屬性緩存
+當前：多個函式各自獲取 Application 屬性
+優化：
+```vba
+Dim savedScreenUpdating As Boolean
+Dim savedCalc As XlCalculation
+savedScreenUpdating = Application.ScreenUpdating
+savedCalc = Application.Calculation
+' ...
+Application.ScreenUpdating = savedScreenUpdating
+Application.Calculation = savedCalc
+```
+
+## 預計性能提升
+- ScreenUpdating 暫停：50-70% 改進
+- 批量寫入 (適用到所有寫值迴圈)：30-50% 改進
+- 字典查詢優化：10-15% 改進
+- 綜合效果：**整體快 2-3 倍**
+
+## 實施優先度
+1. **高優先度**：批量寫入優化 (CreateOne*Section 中的讀值迴圈)
+2. **中優先度**：字典查詢優化 + 應用程式屬性緩存
+3. **低優先度**：邊界計算優化 (效果最小但代碼簡潔)

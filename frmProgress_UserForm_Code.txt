@@ -1,0 +1,147 @@
+====================================================================
+進度條 UserForm 建立指南
+====================================================================
+
+【步驟 1】在 VBA 編輯器中建立 UserForm
+1. 按 Alt + F11 開啟 VBA 編輯器
+2. 點選【插入】→【UserForm】
+3. 在屬性視窗設定：
+   - (Name): frmProgress
+   - Caption: 處理進度
+   - Width: 380
+   - Height: 160
+
+【步驟 2】加入以下 5 個控制項到 UserForm
+
+控制項 1: Label (標題)
+   - (Name): lblTitle
+   - Caption: 正在處理測試報告...
+
+控制項 2: Label (訊息)
+   - (Name): lblMessage
+   - Caption: 初始化中...
+
+控制項 3: Frame (進度條外框)
+   - (Name): frameProgress
+   - Caption: (空白)
+
+控制項 4: Label (進度條)
+   - (Name): lblProgressBar
+   - Caption: (空白)
+   - BackStyle: 1 - fmBackStyleOpaque
+
+控制項 5: Label (百分比)
+   - (Name): lblPercent
+   - Caption: 0%
+
+【步驟 3】複製以下程式碼到 frmProgress 的程式碼視窗
+
+====================================================================
+UserForm 程式碼 (frmProgress)
+====================================================================
+Option Explicit
+
+Private Sub UserForm_Initialize()
+    ' ========== UserForm 設定 ==========
+    Me.Width = 380
+    Me.Height = 160
+    Me.Caption = "處理進度"
+    Me.BackColor = RGB(240, 240, 240)
+    Me.StartUpPosition = 0  ' 手動定位
+    Me.Left = Application.Left + (Application.Width - Me.Width) / 2
+    Me.Top = Application.Top + (Application.Height - Me.Height) / 2
+
+    ' ========== 標題 ==========
+    With lblTitle
+        .Left = 10
+        .Top = 10
+        .Width = 350
+        .Height = 18
+        .Caption = "正在處理測試報告..."
+        .Font.Size = 11
+        .Font.Bold = True
+        .ForeColor = RGB(0, 102, 204)
+        .TextAlign = fmTextAlignCenter
+    End With
+
+    ' ========== 當前操作訊息 ==========
+    With lblMessage
+        .Left = 10
+        .Top = 35
+        .Width = 350
+        .Height = 16
+        .Caption = "初始化中..."
+        .Font.Size = 9
+        .ForeColor = RGB(80, 80, 80)
+        .TextAlign = fmTextAlignLeft
+    End With
+
+    ' ========== 進度條外框 (Frame) ==========
+    With frameProgress
+        .Left = 10
+        .Top = 58
+        .Width = 350
+        .Height = 30
+        .Caption = ""
+        .BackColor = RGB(255, 255, 255)
+        .BorderStyle = fmBorderStyleSingle
+        .SpecialEffect = fmSpecialEffectSunken
+    End With
+
+    ' ========== 進度條（動畫效果） ==========
+    With lblProgressBar
+        .Left = 12  ' frameProgress.Left + 2
+        .Top = 60   ' frameProgress.Top + 2
+        .Width = 0  ' 初始寬度為 0
+        .Height = 26
+        .BackStyle = fmBackStyleOpaque
+        .BackColor = RGB(79, 129, 189)  ' 藍色進度條
+        .BorderStyle = fmBorderStyleNone
+    End With
+
+    ' ========== 百分比數字 ==========
+    With lblPercent
+        .Left = 10
+        .Top = 95
+        .Width = 350
+        .Height = 20
+        .Caption = "0%"
+        .Font.Size = 12
+        .Font.Bold = True
+        .ForeColor = RGB(0, 102, 204)
+        .TextAlign = fmTextAlignCenter
+    End With
+End Sub
+
+' ========== 更新進度條方法（含動畫效果） ==========
+Public Sub UpdateProgress(ByVal message As String, ByVal percentComplete As Double)
+    ' 限制百分比範圍
+    If percentComplete < 0 Then percentComplete = 0
+    If percentComplete > 100 Then percentComplete = 100
+
+    ' 更新訊息
+    lblMessage.Caption = message
+
+    ' 更新進度條寬度（平滑動畫效果）
+    Dim targetWidth As Double
+    targetWidth = 346 * (percentComplete / 100)  ' 346 = frameProgress.Width - 4
+
+    ' 直接設定寬度（移除逐步動畫以提升效能）
+    lblProgressBar.Width = targetWidth
+
+    ' 更新百分比數字
+    lblPercent.Caption = Format(percentComplete, "0.0") & "%"
+
+    ' 強制更新顯示
+    DoEvents
+End Sub
+
+' ========== 完成時顯示訊息 ==========
+Public Sub ShowComplete(ByVal totalTime As Double)
+    lblTitle.Caption = "處理完成！"
+    lblMessage.Caption = "總處理時間: " & Format(totalTime, "0.00") & " 秒"
+    lblPercent.Caption = "100%"
+    lblProgressBar.Width = 346
+    lblProgressBar.BackColor = RGB(92, 184, 92)  ' 改為綠色表示完成
+    DoEvents
+End Sub

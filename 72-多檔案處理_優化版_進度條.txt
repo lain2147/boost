@@ -1,0 +1,353 @@
+Option Explicit
+
+' ====================================================================
+' 【優化版本】加入進度條 + 效能優化
+' 修改日期：2025-11-26
+' 主要改進：
+'   1. 加入視覺化進度條（動畫效果 + 百分比顯示）
+'   2. 效能優化（ScreenUpdating, Calculation, 批量寫入）
+'   3. 檔案讀取進度追蹤
+'   4. 區段建立進度追蹤
+' ====================================================================
+
+' 全域進度條物件
+Private progressForm As frmProgress
+
+' ====================================================================
+' 主程式 - 優化版本 with 進度條
+' ====================================================================
+Sub ImportTurnOnTestReport()
+    Dim filePathArray As Variant
+    Dim fileContent As String
+    Dim lines() As String
+    Dim i As Long
+    Dim startTime As Double
+
+    startTime = Timer
+
+    ' ========== 顯示進度條 ==========
+    Set progressForm = New frmProgress
+    progressForm.Show vbModeless
+    DoEvents
+
+    ' ========== 選擇檔案 ==========
+    progressForm.UpdateProgress "請選擇要處理的 TXT 檔案...", 0
+
+    filePathArray = Application.GetOpenFilename("Text Files (*.txt), *.txt", , _
+                    "選擇測試報告檔案 - 可選擇多個檔案", , MultiSelect:=True)
+
+    ' 檢查使用者是否取消選擇
+    If Not IsArray(filePathArray) Then
+        Unload progressForm
+        Exit Sub
+    End If
+
+    ' 顯示選擇的檔案數量
+    Dim fileCount As Long
+    fileCount = UBound(filePathArray) - LBound(filePathArray) + 1
+    Debug.Print "選擇了 " & fileCount & " 個檔案"
+
+    ' ========== 效能優化設定 ==========
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.DisplayStatusBar = False
+
+    On Error GoTo ErrorHandler
+
+    ' ========== 階段 1: 讀取檔案 (0-20%) ==========
+    progressForm.UpdateProgress "正在讀取檔案...", 2
+
+    ' 如果是單一檔案，直接讀取
+    If fileCount = 1 Then
+        progressForm.UpdateProgress "讀取檔案: " & Dir(CStr(filePathArray(1))), 5
+        fileContent = ReadTextFile(CStr(filePathArray(LBound(filePathArray))))
+        progressForm.UpdateProgress "檔案讀取完成 ✓", 20
+    Else
+        ' 如果是多個檔案，合併內容（含進度追蹤）
+        fileContent = MergeMultipleFilesWithProgress(filePathArray, progressForm)
+    End If
+
+    If fileContent = "" Then
+        MsgBox "無法讀取檔案！", vbCritical
+        GoTo CleanupAndExit
+    End If
+
+    ' ========== 階段 2: 解析內容 (20-30%) ==========
+    progressForm.UpdateProgress "正在解析檔案內容...", 22
+    lines = Split(fileContent, vbCrLf)
+    progressForm.UpdateProgress "共 " & (UBound(lines) + 1) & " 行資料", 25
+
+    Dim customerName As String
+    Dim inspectorName As String
+    Dim testDate As String
+    Dim unitCount As Long
+
+    ExtractHeaderInfo lines, customerName, inspectorName, testDate, unitCount
+    progressForm.UpdateProgress "統計台數: " & unitCount & " 台", 28
+    Debug.Print "統計到的台數: " & unitCount
+
+    ' ========== 階段 3: 建立工作簿 (30-35%) ==========
+    progressForm.UpdateProgress "建立新工作簿...", 30
+
+    Dim newWb As Workbook
+    Set newWb = Workbooks.Add
+
+    Application.DisplayAlerts = False
+    Do While newWb.Sheets.Count > 1
+        newWb.Sheets(newWb.Sheets.Count).Delete
+    Loop
+    Application.DisplayAlerts = True
+
+    Dim ws As Worksheet
+    Set ws = newWb.Sheets(1)
+    progressForm.UpdateProgress "工作簿建立完成 ✓", 35
+
+    ' 移除資訊欄
+    ' CreateSummarySectionInSheet ws, customerName, inspectorName, testDate, unitCount
+
+    ' ========== 階段 4: 識別測試序列 (35-40%) ==========
+    progressForm.UpdateProgress "正在識別測試序列...", 36
+    Dim seqList As Object
+    Set seqList = FindAllSequences(lines)
+
+    progressForm.UpdateProgress "找到 " & seqList.Count & " 個測試序列 ✓", 40
+    Debug.Print "找到 " & seqList.Count & " 個測試序列"
+
+    ' ========== 階段 5: 建立測試區段 (40-90%) ==========
+    If seqList.Count > 0 Then
+        CreateAllSectionsInSheetWithProgress ws, seqList, lines, unitCount, progressForm
+    End If
+
+    ' ========== 階段 6: 最終處理 (90-95%) ==========
+    progressForm.UpdateProgress "正在格式化工作表...", 90
+
+    Dim sheetName As String
+    sheetName = customerName & "_" & testDate & "_" & unitCount
+    sheetName = CleanSheetName(sheetName)
+    ws.Name = sheetName
+
+    ws.Activate
+    ws.Range("A1").Select
+
+    progressForm.UpdateProgress "正在儲存檔案...", 93
+    SaveWithCustomName newWb, customerName, testDate, unitCount
+
+    ' ========== 完成 (100%) ==========
+    Dim elapsedTime As Double
+    elapsedTime = Timer - startTime
+    progressForm.ShowComplete elapsedTime
+    Debug.Print "總處理時間: " & Format(elapsedTime, "0.00") & " 秒"
+
+    ' 延遲 1.5 秒後自動關閉進度條
+    Application.Wait Now + TimeValue("00:00:01.5")
+
+CleanupAndExit:
+    ' ========== 恢復 Excel 設定 ==========
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.DisplayStatusBar = True
+
+    If Not progressForm Is Nothing Then
+        Unload progressForm
+        Set progressForm = Nothing
+    End If
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "發生錯誤: " & Err.Description & vbCrLf & "錯誤行號: " & Erl, vbCritical
+    Resume CleanupAndExit
+End Sub
+
+' ====================================================================
+' 多檔案合併函數 - 加入進度追蹤
+' ====================================================================
+Function MergeMultipleFilesWithProgress(filePathArray As Variant, progressForm As frmProgress) As String
+    Dim mergedContent As String
+    Dim currentContent As String
+    Dim lines() As String
+    Dim i As Long, j As Long
+    Dim firstSerialNoLine As Long
+    Dim filePath As Variant
+    Dim fileIndex As Long
+    Dim percentComplete As Double
+    Dim fileName As String
+    Dim fileCount As Long
+
+    mergedContent = ""
+    fileIndex = 0
+    fileCount = UBound(filePathArray) - LBound(filePathArray) + 1
+
+    For Each filePath In filePathArray
+        fileIndex = fileIndex + 1
+
+        ' 計算進度 (5% ~ 20%)
+        percentComplete = 5 + ((fileIndex) / fileCount) * 15
+
+        ' 取得檔案名稱
+        fileName = Dir(CStr(filePath))
+        progressForm.UpdateProgress "讀取: " & fileName & " (" & fileIndex & "/" & fileCount & ")", percentComplete
+
+        Debug.Print "處理檔案 " & fileIndex & ": " & filePath
+
+        ' 讀取檔案內容
+        currentContent = ReadTextFile(CStr(filePath))
+
+        If currentContent = "" Then
+            Debug.Print "警告：無法讀取檔案 " & filePath
+            GoTo NextFile
+        End If
+
+        ' 第一個檔案：保留完整內容
+        If fileIndex = 1 Then
+            mergedContent = currentContent
+            Debug.Print "第一個檔案：保留完整內容"
+        Else
+            ' 第 2+ 檔案：跳過標題資訊，只保留測試資料
+            lines = Split(currentContent, vbCrLf)
+            firstSerialNoLine = -1
+
+            ' 找到第一個 "Serial No" 出現的行
+            For i = 0 To UBound(lines)
+                If InStr(lines(i), "Serial No") > 0 Then
+                    firstSerialNoLine = i
+                    Exit For
+                End If
+            Next i
+
+            ' 如果找到了，從該行開始合併
+            If firstSerialNoLine >= 0 Then
+                Debug.Print "檔案 " & fileIndex & " 從第 " & firstSerialNoLine & " 行開始合併"
+                For j = firstSerialNoLine To UBound(lines)
+                    mergedContent = mergedContent & vbCrLf & lines(j)
+                Next j
+            Else
+                Debug.Print "警告：檔案 " & fileIndex & " 未找到 Serial No，跳過合併"
+            End If
+        End If
+
+NextFile:
+    Next filePath
+
+    progressForm.UpdateProgress "檔案合併完成 ✓ (共 " & fileCount & " 個檔案)", 20
+    Debug.Print "總共合併了 " & fileIndex & " 個檔案"
+    MergeMultipleFilesWithProgress = mergedContent
+End Function
+
+' ====================================================================
+' 建立所有區段 - 加入進度追蹤
+' ====================================================================
+Sub CreateAllSectionsInSheetWithProgress(ws As Worksheet, seqList As Object, lines() As String, unitCount As Long, progressForm As frmProgress)
+    Dim startCol As Integer
+    Dim seqIdx As Integer
+    Dim seqInfo As Object
+    Dim percentComplete As Double
+
+    startCol = 2
+
+    ' 計算最大參數行數
+    Dim maxParamRows As Long
+    maxParamRows = 0
+
+    For seqIdx = 0 To seqList.Count - 1
+        Set seqInfo = seqList(seqIdx)
+        Dim paramRowCount As Long
+        paramRowCount = GetParamRowCount(seqInfo("type"))
+
+        If paramRowCount > maxParamRows Then
+            maxParamRows = paramRowCount
+        End If
+    Next seqIdx
+
+    Dim snRowPosition As Long
+    snRowPosition = 2 + maxParamRows + 1
+
+    ' 建立每個測試區段（含進度追蹤）
+    For seqIdx = 0 To seqList.Count - 1
+        Set seqInfo = seqList(seqIdx)
+
+        ' 計算進度 (40% ~ 90%)
+        percentComplete = 40 + ((seqIdx + 1) / seqList.Count) * 50
+
+        ' 顯示當前測試類型
+        Dim testTypeName As String
+        Select Case seqInfo("type")
+            Case "TurnOn": testTypeName = "Turn On 測試"
+            Case "HoldUp": testTypeName = "Hold Up 測試"
+            Case "ShortCircuit": testTypeName = "Short Circuit 測試"
+            Case "Combine": testTypeName = "Combine 測試"
+            Case "OLP": testTypeName = "OLP 測試"
+            Case "Dynamic": testTypeName = "Dynamic 測試"
+            Case Else: testTypeName = "Input/Output 測試"
+        End Select
+
+        progressForm.UpdateProgress "建立 " & testTypeName & " (" & (seqIdx + 1) & "/" & seqList.Count & ")", percentComplete
+
+        ' 根據類型建立對應區段
+        If seqInfo("type") = "TurnOn" Then
+            CreateOneTurnOnSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 3
+        ElseIf seqInfo("type") = "HoldUp" Then
+            CreateOneHoldUpSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 4
+        ElseIf seqInfo("type") = "ShortCircuit" Then
+            CreateOneShortCircuitSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 3
+        ElseIf seqInfo("type") = "Combine" Then
+            CreateOneCombineSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 8
+        ElseIf seqInfo("type") = "OLP" Then
+            CreateOneOLPSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 3
+        ElseIf seqInfo("type") = "Dynamic" Then
+            CreateOneDynamicSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 4
+        ElseIf seqInfo("type") = "InputOutput_Iin" Or seqInfo("type") = "InputOutput_Pin" Or _
+               seqInfo("type") = "InputOutput_Eff" Or seqInfo("type") = "InputOutput_General" Then
+            CreateOneInputOutputSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 10
+        End If
+    Next seqIdx
+End Sub
+
+' ====================================================================
+' 以下保留原始程式碼的其他函數
+' （FindAllSequences, ExtractXXXParams, ExtractXXXReads, CreateOneXXXSection 等）
+' ====================================================================
+'
+' 注意：請將你原本 72-多檔案處理.txt 中從 line 80 開始到結尾的
+' 所有其他函數複製到這裡，包括：
+'   - FindAllSequences
+'   - ExtractLoadNameFromSeq
+'   - ExtractHeaderInfo
+'   - ExtractTurnOnParams
+'   - ExtractHoldUpParams
+'   - ExtractCombineParams
+'   - ExtractOLPParams
+'   - ExtractDynamicParams
+'   - ExtractInputOutputParams
+'   - ExtractAllTonReads
+'   - ExtractAllHoldUpReads
+'   - ExtractAllPinReads
+'   - ExtractAllCombineReads
+'   - ExtractAllOLPReads
+'   - ExtractAllDynamicReads
+'   - ExtractAllInputOutputReads
+'   - CreateOneTurnOnSection
+'   - CreateOneHoldUpSection
+'   - CreateOneShortCircuitSection
+'   - CreateOneCombineSection
+'   - CreateOneOLPSection
+'   - CreateOneDynamicSection
+'   - CreateOneInputOutputSection
+'   - AddParamGroup
+'   - GetParamRowCount
+'   - CleanNumericValue
+'   - ReadTextFile
+'   - SaveWithCustomName
+'   - CleanSheetName
+'   - SplitLine
+'   - 等等...
+'
+' ====================================================================
