@@ -1,0 +1,40 @@
+# Excel 臨時檔案
+~$*.xlsm
+~$*.xlsx
+*.tmp
+
+# Windows 系統檔案
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# Excel 備份檔案
+*.xlk
+*.bak
+
+# 測試用的 TXT 檔案 (可選，如果您想保留測試檔案請移除這行)
+# *.txt
+
+# 輸出的 Excel 報告檔案 (可選)
+# *_pcs.xlsx
+
+# macOS
+.DS_Store
+
+# Node modules (如果未來有使用)
+node_modules/
+
+# Log files
+*.log
+
+# Python cache (如果未來有使用 Python)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Claude Code 相關
+.claude/
