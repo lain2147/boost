@@ -255,13 +255,15 @@ Function FindAllSequences(lines() As String) As Object
         End If
         
         ' Load Regulation Test: 寬鬆匹配（支援 "Load Regulation"、"LoadRegulation"、"Load regulation" 等變形）
+        ' 但要排除 "Combine Regulation Test"（應由 Combine 邏輯處理）
         Dim isLoadReg As Boolean
         isLoadReg = False
         If inFirstUnit And InStr(lines(i), "SEQ.") > 0 Then
             Dim upperLine As String
             upperLine = UCase(lines(i))
-            ' 寬鬆匹配：包含 "LOAD" 且包含 "REGULATION" 或 "REG"
-            If (InStr(upperLine, "LOAD") > 0) And (InStr(upperLine, "REGULATION") > 0 Or InStr(upperLine, "REG") > 0) Then
+            ' 寬鬆匹配：包含 "LOAD" 且包含 "REGULATION" 或 "REG"，但不包含 "COMBINE"
+            If (InStr(upperLine, "LOAD") > 0) And (InStr(upperLine, "REGULATION") > 0 Or InStr(upperLine, "REG") > 0) _
+               And InStr(upperLine, "COMBINE") = 0 Then
                 isLoadReg = True
             End If
         End If
@@ -4202,7 +4204,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                 readings.Add "Vdc", ""
                 readings.Add "Vpp", ""
                 
-                ' ? 新增:通用類型需要 VinRead
+                ' 新增:通用類型需要 VinRead
                 If seqType = "InputOutput_General" Then
                     readings.Add "VinRead", ""
                 End If
@@ -4278,7 +4280,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                         Dim effLine As String
                         effLine = lines(i + 4)
                         parts = SplitLine(effLine)
-                        Dim effIdx As Integer
+                        Dim effIdx As Integer, vinIdx2 As Integer
                         For effIdx = 0 To UBound(parts)
                             If parts(effIdx) = "Eff" Then
                                 If effIdx + 3 <= UBound(parts) Then
@@ -4289,32 +4291,19 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                                 Exit For
                             End If
                         Next effIdx
-                    End If
-                    
-                    ' ? 新增:提取 Vin Reading (通用類型)
-                    If seqType = "InputOutput_General" Then
-                        Dim vinSearchEnd As Long
-                        vinSearchEnd = i + 10
-                        If vinSearchEnd > seqEndLine Then vinSearchEnd = seqEndLine
                         
-                        Dim vinIdx As Long
-                        For vinIdx = i + 1 To vinSearchEnd
-                            If InStr(lines(vinIdx), "Vin") > 0 And InStr(lines(vinIdx), "Fin") = 0 Then
-                                parts = SplitLine(lines(vinIdx))
-                                ' Vin     102.000   98.000    99.550
-                                ' 索引:    0         1        2        3 (Reading)
-                                Dim vinPartIdx As Integer
-                                For vinPartIdx = 0 To UBound(parts)
-                                    If parts(vinPartIdx) = "Vin" Then
-                                        If vinPartIdx + 3 <= UBound(parts) And parts(vinPartIdx + 3) <> "*" Then
-                                            ioData(currentSerial)("VinRead") = parts(vinPartIdx + 3)
-                                        End If
-                                        Exit For
+                        ' 新增:在 Eff 行中也提取 Vin Reading (通用類型)
+                        ' Eff 行格式: Eff  99.000  83.000  87.281  Vin  30.000  0.000  24.001
+                        If seqType = "InputOutput_General" Then
+                            For vinIdx2 = 0 To UBound(parts)
+                                If parts(vinIdx2) = "Vin" Then
+                                    If vinIdx2 + 3 <= UBound(parts) And parts(vinIdx2 + 3) <> "*" Then
+                                        ioData(currentSerial)("VinRead") = parts(vinIdx2 + 3)
                                     End If
-                                Next vinPartIdx
-                                Exit For
-                            End If
-                        Next vinIdx
+                                    Exit For
+                                End If
+                            Next vinIdx2
+                        End If
                     End If
                 End If
             End If
