@@ -135,6 +135,101 @@ ErrorHandler:
     Resume CleanupAndExit
 End Sub
 
+' ========== 數據內容檢測函數（Input/Output 第二層判斷） ==========
+Function DetectInputOutputTypeFromData(lines() As String, startLine As Long) As String
+    ' 根據數據內容進行 Input/Output 類型判斷（作為標題關鍵字判斷的後備方案）
+    ' 優先級：Eff > Iin > Pin > General
+
+    Dim effMin As String, iinrmsMax As String, pinMax As String
+    effMin = "*"
+    iinrmsMax = "*"
+    pinMax = "*"
+
+    Dim i As Long, lineText As String, parts() As String
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+
+    ' 找到測試序列結束位置
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+
+    ' 掃描數據區域，尋找 "Max Min Reading" 標題行
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+
+        ' 找到包含 Max/Min/Reading 的標題行（且不包含 = 號）
+        If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And _
+           InStr(lineText, "Reading") > 0 And InStr(lineText, "=") = 0 Then
+
+            ' 提取 Eff Min（通常在第 4 行）
+            If i + 4 <= seqEndLine And InStr(lines(i + 4), "Eff") > 0 Then
+                Dim effLine As String
+                effLine = lines(i + 4)
+                parts = SplitLine(effLine)
+                Dim effIdx As Integer
+                For effIdx = 0 To UBound(parts)
+                    If parts(effIdx) = "Eff" Then
+                        If effIdx + 2 <= UBound(parts) Then
+                            effMin = parts(effIdx + 2)  ' Min 在第 3 個位置
+                        End If
+                        Exit For
+                    End If
+                Next effIdx
+            End If
+
+            ' 提取 Iinrms Max（通常在第 1 行）
+            If i + 1 <= seqEndLine And InStr(lines(i + 1), "Iinrms") > 0 Then
+                Dim iinrmsLine As String
+                iinrmsLine = lines(i + 1)
+                parts = SplitLine(iinrmsLine)
+                Dim iinrmsIdx As Integer
+                For iinrmsIdx = 0 To UBound(parts)
+                    If parts(iinrmsIdx) = "Iinrms" Then
+                        If iinrmsIdx + 1 <= UBound(parts) Then
+                            iinrmsMax = parts(iinrmsIdx + 1)  ' Max 在第 2 個位置
+                        End If
+                        Exit For
+                    End If
+                Next iinrmsIdx
+            End If
+
+            ' 提取 Pin Max（通常在第 2 行）
+            If i + 2 <= seqEndLine And InStr(lines(i + 2), "Pin") > 0 Then
+                Dim pinLine As String
+                pinLine = lines(i + 2)
+                parts = SplitLine(pinLine)
+                Dim pinIdx As Integer
+                For pinIdx = 0 To UBound(parts)
+                    If parts(pinIdx) = "Pin" Then
+                        If pinIdx + 1 <= UBound(parts) Then
+                            pinMax = parts(pinIdx + 1)  ' Max 在第 2 個位置
+                        End If
+                        Exit For
+                    End If
+                Next pinIdx
+            End If
+
+            Exit For
+        End If
+    Next i
+
+    ' 按優先級判斷：Eff > Iin > Pin > General
+    If effMin <> "*" And effMin <> "" Then
+        DetectInputOutputTypeFromData = "InputOutput_Eff"
+    ElseIf iinrmsMax <> "*" And iinrmsMax <> "" Then
+        DetectInputOutputTypeFromData = "InputOutput_Iin"
+    ElseIf pinMax <> "*" And pinMax <> "" Then
+        DetectInputOutputTypeFromData = "InputOutput_Pin"
+    Else
+        DetectInputOutputTypeFromData = "InputOutput_General"
+    End If
+End Function
+
 Function FindAllSequences(lines() As String) As Object
     Dim seqList As Object
     Set seqList = CreateObject("Scripting.Dictionary")
@@ -283,13 +378,13 @@ Function FindAllSequences(lines() As String) As Object
             seqList.Add seqList.Count, seqInfo
         End If
         
-        ' ? 關鍵修正:精確判斷 Input/Output 類型
+        ' ========== Input/Output 雙層判斷機制 ==========
         If inFirstUnit And InStr(lines(i), "Input/Output") > 0 And InStr(lines(i), "SEQ.") > 0 Then
             seqTitle = Trim(lines(i))
             seqStartLine = i
             loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
-            
-            ' 判斷是哪種 InputOutput 類型
+
+            ' 第一層：標題關鍵字判斷（優先）
             If InStr(lines(i), "Iin<") > 0 Or InStr(lines(i), "Iin <") > 0 Then
                 seqType = "InputOutput_Iin"
             ElseIf InStr(lines(i), "Pin<") > 0 Or InStr(lines(i), "Pin <") > 0 Then
@@ -297,8 +392,8 @@ Function FindAllSequences(lines() As String) As Object
             ElseIf InStr(lines(i), "Eff.") > 0 Or (InStr(lines(i), "Eff") > 0 And InStr(lines(i), "Eff>") > 0) Then
                 seqType = "InputOutput_Eff"
             Else
-                ' 其他所有 Input/Output 測試都歸類為通用類型
-                seqType = "InputOutput_General"
+                ' 第二層：數據內容判斷（後備方案）
+                seqType = DetectInputOutputTypeFromData(lines, seqStartLine)
             End If
             
             Set seqInfo = CreateObject("Scripting.Dictionary")
@@ -2254,35 +2349,40 @@ Sub CreateOneInputOutputSection(ws As Worksheet, seqInfo As Object, lines() As S
     
     ' ?? 組5：電壓規格（淺粉色）
     Dim group5Params As Variant, group5Keys As Variant
-    If seqType = "InputOutput_General" Then
+    If seqType = "InputOutput_General" Or seqType = "InputOutput_Eff" Then
+        ' ===== Eff 和 General 類型都顯示 Vin Max/Min =====
         group5Params = Array(actualLoadName & "_Vin Max", actualLoadName & "_Vin Min", _
                             actualLoadName & "_Vdc Max", actualLoadName & "_Vdc Min", _
                             actualLoadName & "_Vpp Max")
         group5Keys = Array("VinMax", "VinMin", "VdcMax", "VdcMin", "VppMax")
     Else
+        ' Iin 和 Pin 類型只顯示 Vdc/Vpp
         group5Params = Array(actualLoadName & "_Vdc Max", actualLoadName & "_Vdc Min", _
                             actualLoadName & "_Vpp Max")
         group5Keys = Array("VdcMax", "VdcMin", "VppMax")
     End If
     Call AddParamGroupIO(ws, row, col1, col1 + 1, group5Params, group5Keys, params, RGB(255, 232, 240))
     
-    ' ========== 讀值區（保持不變）==========
+    ' ========== 讀值區（Load Name 前綴）==========
     row = snRowTarget
+    Dim loadPrefix As String
+    loadPrefix = actualLoadName & "_"  ' 例如："5.3_"
+
     ws.Cells(row, col1).value = "S/N"
-    ws.Cells(row, col1 + 1).value = "Iinrms"
-    ws.Cells(row, col1 + 2).value = "Pin"
-    ws.Cells(row, col1 + 3).value = "Pdc"
-    ws.Cells(row, col1 + 4).value = "Eff"
-    ws.Cells(row, col1 + 5).value = "Pf"
-    
+    ws.Cells(row, col1 + 1).value = loadPrefix & "Iinrms"
+    ws.Cells(row, col1 + 2).value = loadPrefix & "Pin"
+    ws.Cells(row, col1 + 3).value = loadPrefix & "Pdc"
+    ws.Cells(row, col1 + 4).value = loadPrefix & "Eff"
+    ws.Cells(row, col1 + 5).value = loadPrefix & "Pf"
+
     If seqType = "InputOutput_General" Then
-        ws.Cells(row, col1 + 6).value = "Vin Read"
+        ws.Cells(row, col1 + 6).value = loadPrefix & "Vin Read"
     Else
-        ws.Cells(row, col1 + 6).value = "Idc Read"
+        ws.Cells(row, col1 + 6).value = loadPrefix & "Idc Read"
     End If
-    
-    ws.Cells(row, col1 + 7).value = "Vdc Read"
-    ws.Cells(row, col1 + 8).value = "Vpp Read"
+
+    ws.Cells(row, col1 + 7).value = loadPrefix & "Vdc Read"
+    ws.Cells(row, col1 + 8).value = loadPrefix & "Vpp Read"
     With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 8))
         .Font.Bold = True
         .Interior.Color = RGB(189, 215, 238)
@@ -3998,14 +4098,14 @@ Function ExtractInputOutputParams(lines() As String, startLine As Long, Optional
     ElseIf seqType = "InputOutput_Eff" Then
         params.Add "EffMin", ""
     End If
-    
+
     params.Add "IR", ""
     params.Add "VdcMax", ""
     params.Add "VdcMin", ""
     params.Add "VppMax", ""
-    
-    ' ? 新增:Vin Max/Min (通用類型特有)
-    If seqType = "InputOutput_General" Then
+
+    ' ===== 新增:Vin Max/Min (Eff 和 General 類型特有) =====
+    If seqType = "InputOutput_General" Or seqType = "InputOutput_Eff" Then
         params.Add "VinMax", ""
         params.Add "VinMin", ""
     End If
@@ -4087,9 +4187,9 @@ Function ExtractInputOutputParams(lines() As String, startLine As Long, Optional
                     End If
                 End If
             End If
-            
-            ' ? 新增:提取 Vin Max/Min (通用類型)
-            If seqType = "InputOutput_General" Then
+
+            ' ===== 新增:提取 Vin Max/Min (Eff 和 General 類型) =====
+            If seqType = "InputOutput_General" Or seqType = "InputOutput_Eff" Then
                 ' 在 "Max Min Reading" 區塊中尋找 Vin 行
                 Dim vinSearchEnd As Long
                 vinSearchEnd = i + 10
@@ -4204,7 +4304,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                 readings.Add "Vdc", ""
                 readings.Add "Vpp", ""
                 
-                ' 新增:通用類型需要 VinRead
+                ' ? 新增:通用類型需要 VinRead
                 If seqType = "InputOutput_General" Then
                     readings.Add "VinRead", ""
                 End If
@@ -4280,7 +4380,7 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                         Dim effLine As String
                         effLine = lines(i + 4)
                         parts = SplitLine(effLine)
-                        Dim effIdx As Integer, vinIdx2 As Integer
+                        Dim effIdx As Integer
                         For effIdx = 0 To UBound(parts)
                             If parts(effIdx) = "Eff" Then
                                 If effIdx + 3 <= UBound(parts) Then
@@ -4291,19 +4391,32 @@ Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqTy
                                 Exit For
                             End If
                         Next effIdx
+                    End If
+                    
+                    ' ? 新增:提取 Vin Reading (通用類型)
+                    If seqType = "InputOutput_General" Then
+                        Dim vinSearchEnd As Long
+                        vinSearchEnd = i + 10
+                        If vinSearchEnd > seqEndLine Then vinSearchEnd = seqEndLine
                         
-                        ' 新增:在 Eff 行中也提取 Vin Reading (通用類型)
-                        ' Eff 行格式: Eff  99.000  83.000  87.281  Vin  30.000  0.000  24.001
-                        If seqType = "InputOutput_General" Then
-                            For vinIdx2 = 0 To UBound(parts)
-                                If parts(vinIdx2) = "Vin" Then
-                                    If vinIdx2 + 3 <= UBound(parts) And parts(vinIdx2 + 3) <> "*" Then
-                                        ioData(currentSerial)("VinRead") = parts(vinIdx2 + 3)
+                        Dim vinIdx As Long
+                        For vinIdx = i + 1 To vinSearchEnd
+                            If InStr(lines(vinIdx), "Vin") > 0 And InStr(lines(vinIdx), "Fin") = 0 Then
+                                parts = SplitLine(lines(vinIdx))
+                                ' Vin     102.000   98.000    99.550
+                                ' 索引:    0         1        2        3 (Reading)
+                                Dim vinPartIdx As Integer
+                                For vinPartIdx = 0 To UBound(parts)
+                                    If parts(vinPartIdx) = "Vin" Then
+                                        If vinPartIdx + 3 <= UBound(parts) And parts(vinPartIdx + 3) <> "*" Then
+                                            ioData(currentSerial)("VinRead") = parts(vinPartIdx + 3)
+                                        End If
+                                        Exit For
                                     End If
-                                    Exit For
-                                End If
-                            Next vinIdx2
-                        End If
+                                Next vinPartIdx
+                                Exit For
+                            End If
+                        Next vinIdx
                     End If
                 End If
             End If
@@ -4373,10 +4486,10 @@ Function GetParamRowCount(testType As String) As Long
             GetParamRowCount = 15
         Case "LoadRegulation"
             GetParamRowCount = 24  ' 1 標題 + 1 Condition/Value 標題 + 22 參數
-        Case "InputOutput_Iin", "InputOutput_Pin", "InputOutput_Eff"
-            GetParamRowCount = 12
-        Case "InputOutput_General"
-            GetParamRowCount = 15  ' ? 新增：包含 Vin Max/Min
+        Case "InputOutput_Iin", "InputOutput_Pin"
+            GetParamRowCount = 12  ' 不含 Vin Max/Min
+        Case "InputOutput_Eff", "InputOutput_General"
+            GetParamRowCount = 15  ' ===== Eff 和 General 都包含 Vin Max/Min =====
         Case Else
             GetParamRowCount = 10
     End Select
@@ -4395,14 +4508,17 @@ Sub AddParamGroup(ws As Worksheet, ByRef row As Long, col1 As Integer, col2 As I
                   paramNames As Variant, paramKeys As Variant, params As Object, bgColor As Long)
     Dim i As Integer
     For i = 0 To UBound(paramNames)
-        ws.Cells(row, col1).value = paramNames(i)
-        ws.Cells(row, col2).value = params(paramKeys(i))
-        With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
-            .Interior.Color = RGB(255, 242, 204) ' 統一參數背景色（淺米色）
-            .HorizontalAlignment = xlCenter
-            .VerticalAlignment = xlCenter
-        End With
-        row = row + 1
+        ' ===== 跳過 * 號或空值參數 =====
+        If params(paramKeys(i)) <> "*" And params(paramKeys(i)) <> "" Then
+            ws.Cells(row, col1).value = paramNames(i)
+            ws.Cells(row, col2).value = params(paramKeys(i))
+            With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+                .Interior.Color = RGB(255, 242, 204) ' 統一參數背景色（淺米色）
+                .HorizontalAlignment = xlCenter
+                .VerticalAlignment = xlCenter
+            End With
+            row = row + 1
+        End If
     Next i
 End Sub
 ' ========================================
@@ -4411,15 +4527,18 @@ End Sub
 Sub AddParamGroupIO(ws As Worksheet, ByRef row As Long, col1 As Integer, col2 As Integer, _
                     paramNames As Variant, paramKeys As Variant, params As Object, bgColor As Long)
     Dim i As Integer
-        For i = 0 To UBound(paramNames)
-        ws.Cells(row, col1).value = paramNames(i)
-        ws.Cells(row, col1 + 1).value = params(paramKeys(i))
-        With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 1))
+    For i = 0 To UBound(paramNames)
+        ' ===== 跳過 * 號或空值參數 =====
+        If params(paramKeys(i)) <> "*" And params(paramKeys(i)) <> "" Then
+            ws.Cells(row, col1).value = paramNames(i)
+            ws.Cells(row, col1 + 1).value = params(paramKeys(i))
+            With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 1))
                 .Interior.Color = RGB(255, 242, 204) ' 統一參數背景色（淺米色）
-            .HorizontalAlignment = xlCenter
-            .VerticalAlignment = xlCenter
-        End With
-        row = row + 1
+                .HorizontalAlignment = xlCenter
+                .VerticalAlignment = xlCenter
+            End With
+            row = row + 1
+        End If
     Next i
 End Sub
 
