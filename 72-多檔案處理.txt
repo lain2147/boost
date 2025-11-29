@@ -1,3 +1,4 @@
+
 Option Explicit
 
 ' Main function to import and parse Turn On, Hold Up, Short Circuit, Combine, OLP, Dynamic and Input/Output (Iin<, Pin<) test data
@@ -244,7 +245,7 @@ Function FindAllSequences(lines() As String) As Object
             seqStartLine = i
             seqType = "Dynamic"
             loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
-            
+
             Set seqInfo = CreateObject("Scripting.Dictionary")
             seqInfo("title") = seqTitle
             seqInfo("startLine") = seqStartLine
@@ -253,7 +254,23 @@ Function FindAllSequences(lines() As String) As Object
             Set seqInfo("params") = ExtractDynamicParams(lines, seqStartLine, loadName)
             seqList.Add seqList.Count, seqInfo
         End If
-        
+
+        ' 識別 Load Regulation Test
+        If inFirstUnit And InStr(lines(i), "Load Regulation") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            seqType = "LoadRegulation"
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractLoadRegulationParams(lines, seqStartLine, loadName)
+            seqList.Add seqList.Count, seqInfo
+        End If
+
         ' ? 關鍵修正:精確判斷 Input/Output 類型
         If inFirstUnit And InStr(lines(i), "Input/Output") > 0 And InStr(lines(i), "SEQ.") > 0 Then
             seqTitle = Trim(lines(i))
@@ -419,6 +436,9 @@ Sub CreateAllSectionsInSheet(ws As Worksheet, seqList As Object, lines() As Stri
         ElseIf seqInfo("type") = "Dynamic" Then
             CreateOneDynamicSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
             startCol = startCol + 4
+        ElseIf seqInfo("type") = "LoadRegulation" Then
+            CreateOneLoadRegulationSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 13  ' 12 讀值欄 + 1 空白分隔欄
         ElseIf seqInfo("type") = "InputOutput_Iin" Or seqInfo("type") = "InputOutput_Pin" Or _
                seqInfo("type") = "InputOutput_Eff" Or seqInfo("type") = "InputOutput_General" Then
             CreateOneInputOutputSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
@@ -3750,6 +3770,8 @@ Function GetParamRowCount(testType As String) As Long
             GetParamRowCount = 10
         Case "Dynamic"
             GetParamRowCount = 15
+        Case "LoadRegulation"
+            GetParamRowCount = 24  ' 2 (標題) + 22 (參數)
         Case "InputOutput_Iin", "InputOutput_Pin", "InputOutput_Eff"
             GetParamRowCount = 12
         Case "InputOutput_General"
@@ -3800,8 +3822,687 @@ Sub AddParamGroupIO(ws As Worksheet, ByRef row As Long, col1 As Integer, col2 As
     Next i
 End Sub
 
+' ============================================
+' Load Regulation Test 支援函數
+' ============================================
 
+' 提取 Load Regulation 參數 (22個參數)
+Function ExtractLoadRegulationParams(lines() As String, startLine As Long, loadName As String) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
 
+    ' 基本測試條件參數 (4個)
+    params.Add "Vin", ""
+    params.Add "Fin", ""
+    params.Add "DelayTime", ""
+    params.Add "MeasTime", ""
+
+    ' 負載配置參數 (7個)
+    params.Add "LoadName", loadName
+    params.Add "Mode", ""
+    params.Add "Ifs", ""
+    params.Add "Vfs", ""
+    params.Add "VdcFilter", ""
+    params.Add "NoiseFilter", ""
+    params.Add "Von", ""
+
+    ' BITS 與 I/R 參數 (7個)
+    params.Add "BITS1", ""
+    params.Add "BITS2", ""
+    params.Add "BITS3", ""
+    params.Add "SlewRate", ""
+    params.Add "IR1", ""
+    params.Add "IR2", ""
+    params.Add "IR3", ""
+
+    ' 測試負載參數 (1個)
+    params.Add "TestOnLoad", ""
+
+    ' 讀值規格參數 (3個)
+    params.Add "VdcMax", ""
+    params.Add "VdcMin", ""
+    params.Add "VppMax", ""
+
+    Dim i As Long, lineText As String, parts() As String
+    Dim seqEndLine As Long
+
+    ' 確定序列結束行
+    seqEndLine = startLine + 50
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+
+    ' 掃描範圍並提取參數
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+
+        ' 提取 Vin, Fin, Delay Time, Meas. Time
+        If InStr(lineText, "Vin =") > 0 And InStr(lineText, "Fin =") > 0 And InStr(lineText, "Delay Time") > 0 Then
+            params("Vin") = ExtractNumericValue(lineText, "Vin")
+            params("Fin") = ExtractNumericValue(lineText, "Fin")
+            params("DelayTime") = ExtractNumericValue(lineText, "Delay Time")
+            params("MeasTime") = ExtractNumericValue(lineText, "Meas. Time")
+        End If
+
+        ' 提取負載配置 (Load Name, MODE, Ifs, Vfs, Vdc Filter, Noise Filter, Von)
+        If InStr(lineText, "Load Name") > 0 And InStr(lineText, "MODE") > 0 And InStr(lineText, "Vdc Filter") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim loadLine As String
+                loadLine = lines(i + 1)
+                If Trim(Left(loadLine, 2)) = "1." Then
+                    parts = SplitLine(loadLine)
+                    If UBound(parts) >= 1 Then params("LoadName") = parts(1)
+                    If UBound(parts) >= 2 Then params("Mode") = parts(2)
+                    If UBound(parts) >= 3 Then params("Ifs") = parts(3)
+                    If UBound(parts) >= 4 Then params("Vfs") = parts(4)
+                    If UBound(parts) >= 6 Then params("VdcFilter") = parts(6)
+                    If UBound(parts) >= 7 Then params("NoiseFilter") = parts(7)
+                    If UBound(parts) >= 8 Then params("Von") = parts(8)
+                End If
+            End If
+        End If
+
+        ' 提取 BITS 與 I/R (跳過 BITS 顯示，但仍提取值)
+        If InStr(lineText, "BITS-1") > 0 And InStr(lineText, "BITS-2") > 0 And InStr(lineText, "SLEW Rate") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim bitsLine As String
+                bitsLine = lines(i + 1)
+                If Trim(Left(bitsLine, 2)) = "1." Then
+                    parts = SplitLine(bitsLine)
+                    If UBound(parts) >= 1 Then params("BITS1") = parts(1)
+                    If UBound(parts) >= 2 Then params("BITS2") = parts(2)
+                    If UBound(parts) >= 3 Then params("BITS3") = parts(3)
+                    If UBound(parts) >= 4 Then params("SlewRate") = parts(4)
+                    If UBound(parts) >= 5 Then params("IR1") = parts(5)
+                    If UBound(parts) >= 6 Then params("IR2") = parts(6)
+                    If UBound(parts) >= 7 Then params("IR3") = parts(7)
+                End If
+            End If
+        End If
+
+        ' 提取 Test On Which Load
+        If InStr(lineText, "Test On Which Load") > 0 Then
+            Dim eqPos As Long
+            eqPos = InStr(lineText, "=")
+            If eqPos > 0 Then
+                params("TestOnLoad") = Trim(Mid(lineText, eqPos + 1))
+            End If
+        End If
+
+        ' 提取 Vdc/Vpp Max/Min (跳過 * 值)
+        If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And InStr(lineText, "Read-1") > 0 Then
+            ' Vdc 行
+            If i + 1 <= seqEndLine Then
+                Dim vdcLine As String
+                vdcLine = lines(i + 1)
+                If InStr(Trim(vdcLine), "Vdc") = 1 Then
+                    parts = SplitLine(vdcLine)
+                    If UBound(parts) >= 1 And parts(1) <> "*" And Trim(parts(1)) <> "" Then
+                        params("VdcMax") = parts(1)
+                    End If
+                    If UBound(parts) >= 2 And parts(2) <> "*" And Trim(parts(2)) <> "" Then
+                        params("VdcMin") = parts(2)
+                    End If
+                End If
+            End If
+
+            ' Vpp 行
+            If i + 2 <= seqEndLine Then
+                Dim vppLine As String
+                vppLine = lines(i + 2)
+                If InStr(Trim(vppLine), "Vpp") = 1 Then
+                    parts = SplitLine(vppLine)
+                    If UBound(parts) >= 1 And parts(1) <> "*" And Trim(parts(1)) <> "" Then
+                        params("VppMax") = parts(1)
+                    End If
+                End If
+            End If
+        End If
+    Next i
+
+    Set ExtractLoadRegulationParams = params
+End Function
+
+' 提取所有 Load Regulation 讀值 (11個讀值)
+Function ExtractAllLoadRegulationReads(lines() As String, seqTitle As String) As Object
+    Dim lrData As Object
+    Set lrData = CreateObject("Scripting.Dictionary")
+
+    Dim i As Long, currentSerial As String, inTargetSeq As Boolean
+    Dim lineText As String, parts() As String, seqStartLine As Long, seqEndLine As Long
+
+    currentSerial = ""
+    inTargetSeq = False
+    seqStartLine = -1
+
+    For i = 0 To UBound(lines)
+        lineText = lines(i)
+
+        ' 提取序號
+        If InStr(lineText, "Serial No") > 0 Then
+            currentSerial = ExtractSerialNumber(lineText)
+        End If
+
+        ' 識別目標序列
+        If InStr(lineText, seqTitle) > 0 Then
+            inTargetSeq = True
+            seqStartLine = i
+            seqEndLine = i + 50
+            Dim j As Long
+            For j = i + 1 To UBound(lines)
+                If InStr(lines(j), "SEQ.") > 0 Then
+                    seqEndLine = j - 1
+                    Exit For
+                End If
+            Next j
+        End If
+
+        ' 在目標序列中提取讀值
+        If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
+            ' 識別讀值區塊開始（標題行）
+            If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And InStr(lineText, "Read-1") > 0 Then
+                ' 初始化當前序號的讀值字典
+                If Not lrData.Exists(currentSerial) Then
+                    Dim readings As Object
+                    Set readings = CreateObject("Scripting.Dictionary")
+                    readings.Add "VdcRead1", ""
+                    readings.Add "VdcRead2", ""
+                    readings.Add "VdcRead3", ""
+                    readings.Add "VppRead1", ""
+                    readings.Add "VppRead2", ""
+                    readings.Add "VppRead3", ""
+                    readings.Add "VnRead1", ""
+                    readings.Add "VnRead2", ""
+                    readings.Add "VnRead3", ""
+                    readings.Add "dV21", ""
+                    readings.Add "dV31", ""
+                    lrData.Add currentSerial, readings
+                End If
+
+                ' 提取 Vdc 讀值（第一行數據）
+                If i + 1 <= seqEndLine Then
+                    Dim vdcLine As String
+                    vdcLine = lines(i + 1)
+                    If InStr(Trim(vdcLine), "Vdc") = 1 Then
+                        parts = SplitLine(vdcLine)
+                        If UBound(parts) >= 3 Then lrData(currentSerial)("VdcRead1") = parts(3)
+                        If UBound(parts) >= 4 Then lrData(currentSerial)("VdcRead2") = parts(4)
+                        If UBound(parts) >= 5 Then lrData(currentSerial)("VdcRead3") = parts(5)
+                    End If
+                End If
+
+                ' 提取 Vpp 讀值（第二行數據）
+                If i + 2 <= seqEndLine Then
+                    Dim vppLine As String
+                    vppLine = lines(i + 2)
+                    If InStr(Trim(vppLine), "Vpp") = 1 Then
+                        parts = SplitLine(vppLine)
+                        If UBound(parts) >= 3 Then lrData(currentSerial)("VppRead1") = parts(3)
+                        If UBound(parts) >= 4 Then lrData(currentSerial)("VppRead2") = parts(4)
+                        If UBound(parts) >= 5 Then lrData(currentSerial)("VppRead3") = parts(5)
+                    End If
+                End If
+
+                ' 提取 Vn 讀值（第三行數據）- 注意：Vn 沒有 Max/Min，索引不同
+                If i + 3 <= seqEndLine Then
+                    Dim vnLine As String
+                    vnLine = lines(i + 3)
+                    If InStr(Trim(vnLine), "Vn") = 1 Then
+                        parts = SplitLine(vnLine)
+                        ' Vn 沒有 Max/Min，所以 Read-1 從 parts(2) 開始
+                        If UBound(parts) >= 2 Then lrData(currentSerial)("VnRead1") = parts(2)
+                        If UBound(parts) >= 3 Then lrData(currentSerial)("VnRead2") = parts(3)
+                        If UBound(parts) >= 4 Then lrData(currentSerial)("VnRead3") = parts(4)
+                    End If
+                End If
+            End If
+
+            ' 提取 dV 計算值
+            If InStr(lineText, "dV(+)") > 0 And InStr(lineText, "dV21") > 0 Then
+                If lrData.Exists(currentSerial) Then
+                    lrData(currentSerial)("dV21") = ExtractNumericValue(lineText, "dV21")
+                    lrData(currentSerial)("dV31") = ExtractNumericValue(lineText, "dV31")
+                End If
+            End If
+        End If
+
+        ' 離開目標序列
+        If inTargetSeq And i > seqEndLine Then
+            inTargetSeq = False
+        End If
+    Next i
+
+    Set ExtractAllLoadRegulationReads = lrData
+End Function
+
+' 創建 Load Regulation Section (13欄布局 + Condition/Value參數)
+Sub CreateOneLoadRegulationSection(ws As Worksheet, seqInfo As Object, lines() As String, _
+                                    unitCount As Long, startCol As Long, snRowTarget As Long)
+    Dim params As Object
+    Set params = seqInfo("params")
+
+    Dim seqTitle As String
+    seqTitle = seqInfo("title")
+
+    Dim lrData As Object
+    Set lrData = ExtractAllLoadRegulationReads(lines, seqTitle)
+
+    If lrData.Count = 0 Then Exit Sub
+
+    Dim col1 As Long
+    col1 = startCol
+
+    Dim currentRow As Long
+    currentRow = 1
+
+    ' ========== 1. 標題列 ==========
+    ws.Cells(currentRow, col1).value = seqTitle
+    ws.Cells(currentRow, col1).Font.Bold = True
+    ws.Cells(currentRow, col1).Font.Size = 12
+    ws.Cells(currentRow, col1).Interior.Color = RGB(189, 215, 238)
+    ws.Range(ws.Cells(currentRow, col1), ws.Cells(currentRow, col1 + 11)).Merge
+    ws.Cells(currentRow, col1).HorizontalAlignment = xlCenter
+    currentRow = currentRow + 1
+
+    ' ========== 2. 參數區塊 - Condition/Value 格式 ==========
+    ws.Cells(currentRow, col1).value = "Condition"
+    ws.Cells(currentRow, col1).Font.Bold = True
+    ws.Cells(currentRow, col1).Interior.Color = RGB(255, 224, 178)
+    ws.Cells(currentRow, col1).HorizontalAlignment = xlCenter
+
+    ws.Cells(currentRow, col1 + 1).value = "Value"
+    ws.Cells(currentRow, col1 + 1).Font.Bold = True
+    ws.Cells(currentRow, col1 + 1).Interior.Color = RGB(255, 224, 178)
+    ws.Cells(currentRow, col1 + 1).HorizontalAlignment = xlCenter
+    currentRow = currentRow + 1
+
+    ' 參數列表（22個參數）
+    Dim paramList As Variant
+    paramList = Array( _
+        Array("Vin", params("Vin")), _
+        Array("Fin", params("Fin")), _
+        Array("Delay Time", params("DelayTime")), _
+        Array("Meas. Time", params("MeasTime")), _
+        Array("Load Name", params("LoadName")), _
+        Array("Mode", params("Mode")), _
+        Array("Ifs", params("Ifs")), _
+        Array("Vfs", params("Vfs")), _
+        Array("Vdc Filter", params("VdcFilter")), _
+        Array("Noise Filter", params("NoiseFilter")), _
+        Array("Von", params("Von")), _
+        Array("BITS-1", params("BITS1")), _
+        Array("BITS-2", params("BITS2")), _
+        Array("BITS-3", params("BITS3")), _
+        Array("SLEW Rate", params("SlewRate")), _
+        Array("I/R-1", params("IR1")), _
+        Array("I/R-2", params("IR2")), _
+        Array("I/R-3", params("IR3")), _
+        Array("Test On Load", params("TestOnLoad")), _
+        Array("Vdc Max", params("VdcMax")), _
+        Array("Vdc Min", params("VdcMin")), _
+        Array("Vpp Max", params("VppMax")) _
+    )
+
+    Dim p As Variant
+    For Each p In paramList
+        ws.Cells(currentRow, col1).value = p(0)
+        ws.Cells(currentRow, col1).Interior.Color = RGB(255, 224, 178)
+        ws.Cells(currentRow, col1 + 1).value = p(1)
+        ws.Cells(currentRow, col1 + 1).Interior.Color = RGB(255, 249, 196)
+        currentRow = currentRow + 1
+    Next p
+
+    ' ========== 3. 對齊到 snRowTarget ==========
+    currentRow = snRowTarget
+
+    ' ========== 4. S/N 標題列（12欄讀值）==========
+    ws.Cells(currentRow, col1).value = "S/N"
+    ws.Cells(currentRow, col1 + 1).value = "Vdc Read-1"
+    ws.Cells(currentRow, col1 + 2).value = "Vdc Read-2"
+    ws.Cells(currentRow, col1 + 3).value = "Vdc Read-3"
+    ws.Cells(currentRow, col1 + 4).value = "Vpp Read-1"
+    ws.Cells(currentRow, col1 + 5).value = "Vpp Read-2"
+    ws.Cells(currentRow, col1 + 6).value = "Vpp Read-3"
+    ws.Cells(currentRow, col1 + 7).value = "Vn Read-1"
+    ws.Cells(currentRow, col1 + 8).value = "Vn Read-2"
+    ws.Cells(currentRow, col1 + 9).value = "Vn Read-3"
+    ws.Cells(currentRow, col1 + 10).value = "dV21"
+    ws.Cells(currentRow, col1 + 11).value = "dV31"
+
+    Dim colIdx As Long
+    For colIdx = col1 To col1 + 11
+        ws.Cells(currentRow, colIdx).Font.Bold = True
+        ws.Cells(currentRow, colIdx).Interior.Color = RGB(179, 229, 252)
+        ws.Cells(currentRow, colIdx).HorizontalAlignment = xlCenter
+    Next colIdx
+    currentRow = currentRow + 1
+
+    ' ========== 5. 數據行（11個獨立 firstValue 標誌）==========
+    Dim firstVdcRead1 As Boolean, firstVdcRead2 As Boolean, firstVdcRead3 As Boolean
+    Dim firstVppRead1 As Boolean, firstVppRead2 As Boolean, firstVppRead3 As Boolean
+    Dim firstVnRead1 As Boolean, firstVnRead2 As Boolean, firstVnRead3 As Boolean
+    Dim firstdV21 As Boolean, firstdV31 As Boolean
+
+    firstVdcRead1 = True: firstVdcRead2 = True: firstVdcRead3 = True
+    firstVppRead1 = True: firstVppRead2 = True: firstVppRead3 = True
+    firstVnRead1 = True: firstVnRead2 = True: firstVnRead3 = True
+    firstdV21 = True: firstdV31 = True
+
+    Dim maxVdcRead1 As Double, minVdcRead1 As Double
+    Dim maxVdcRead2 As Double, minVdcRead2 As Double
+    Dim maxVdcRead3 As Double, minVdcRead3 As Double
+    Dim maxVppRead1 As Double, minVppRead1 As Double
+    Dim maxVppRead2 As Double, minVppRead2 As Double
+    Dim maxVppRead3 As Double, minVppRead3 As Double
+    Dim maxVnRead1 As Double, minVnRead1 As Double
+    Dim maxVnRead2 As Double, minVnRead2 As Double
+    Dim maxVnRead3 As Double, minVnRead3 As Double
+    Dim maxdV21 As Double, mindV21 As Double
+    Dim maxdV31 As Double, mindV31 As Double
+
+    Dim snKey As Variant
+    Dim dataRow As Long
+    dataRow = currentRow
+
+    For Each snKey In lrData.Keys
+        Dim readVals As Object
+        Set readVals = lrData(snKey)
+
+        ' S/N
+        ws.Cells(dataRow, col1).value = snKey
+        ws.Cells(dataRow, col1).Interior.Color = RGB(225, 245, 254)
+
+        ' Vdc Read-1
+        ws.Cells(dataRow, col1 + 1).value = readVals("VdcRead1")
+        ws.Cells(dataRow, col1 + 1).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("VdcRead1")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 1).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 1).Font.Bold = True
+        End If
+        Dim cleanedVdcRead1 As String
+        cleanedVdcRead1 = CleanNumericValue(CStr(readVals("VdcRead1")))
+        If IsNumeric(cleanedVdcRead1) And cleanedVdcRead1 <> "" Then
+            Dim valVdcRead1 As Double
+            valVdcRead1 = CDbl(cleanedVdcRead1)
+            If firstVdcRead1 Then
+                maxVdcRead1 = valVdcRead1
+                minVdcRead1 = valVdcRead1
+                firstVdcRead1 = False
+            Else
+                If valVdcRead1 > maxVdcRead1 Then maxVdcRead1 = valVdcRead1
+                If valVdcRead1 < minVdcRead1 Then minVdcRead1 = valVdcRead1
+            End If
+        End If
+
+        ' Vdc Read-2
+        ws.Cells(dataRow, col1 + 2).value = readVals("VdcRead2")
+        ws.Cells(dataRow, col1 + 2).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("VdcRead2")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 2).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 2).Font.Bold = True
+        End If
+        Dim cleanedVdcRead2 As String
+        cleanedVdcRead2 = CleanNumericValue(CStr(readVals("VdcRead2")))
+        If IsNumeric(cleanedVdcRead2) And cleanedVdcRead2 <> "" Then
+            Dim valVdcRead2 As Double
+            valVdcRead2 = CDbl(cleanedVdcRead2)
+            If firstVdcRead2 Then
+                maxVdcRead2 = valVdcRead2
+                minVdcRead2 = valVdcRead2
+                firstVdcRead2 = False
+            Else
+                If valVdcRead2 > maxVdcRead2 Then maxVdcRead2 = valVdcRead2
+                If valVdcRead2 < minVdcRead2 Then minVdcRead2 = valVdcRead2
+            End If
+        End If
+
+        ' Vdc Read-3
+        ws.Cells(dataRow, col1 + 3).value = readVals("VdcRead3")
+        ws.Cells(dataRow, col1 + 3).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("VdcRead3")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 3).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 3).Font.Bold = True
+        End If
+        Dim cleanedVdcRead3 As String
+        cleanedVdcRead3 = CleanNumericValue(CStr(readVals("VdcRead3")))
+        If IsNumeric(cleanedVdcRead3) And cleanedVdcRead3 <> "" Then
+            Dim valVdcRead3 As Double
+            valVdcRead3 = CDbl(cleanedVdcRead3)
+            If firstVdcRead3 Then
+                maxVdcRead3 = valVdcRead3
+                minVdcRead3 = valVdcRead3
+                firstVdcRead3 = False
+            Else
+                If valVdcRead3 > maxVdcRead3 Then maxVdcRead3 = valVdcRead3
+                If valVdcRead3 < minVdcRead3 Then minVdcRead3 = valVdcRead3
+            End If
+        End If
+
+        ' Vpp Read-1
+        ws.Cells(dataRow, col1 + 4).value = readVals("VppRead1")
+        ws.Cells(dataRow, col1 + 4).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("VppRead1")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 4).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 4).Font.Bold = True
+        End If
+        Dim cleanedVppRead1 As String
+        cleanedVppRead1 = CleanNumericValue(CStr(readVals("VppRead1")))
+        If IsNumeric(cleanedVppRead1) And cleanedVppRead1 <> "" Then
+            Dim valVppRead1 As Double
+            valVppRead1 = CDbl(cleanedVppRead1)
+            If firstVppRead1 Then
+                maxVppRead1 = valVppRead1
+                minVppRead1 = valVppRead1
+                firstVppRead1 = False
+            Else
+                If valVppRead1 > maxVppRead1 Then maxVppRead1 = valVppRead1
+                If valVppRead1 < minVppRead1 Then minVppRead1 = valVppRead1
+            End If
+        End If
+
+        ' Vpp Read-2
+        ws.Cells(dataRow, col1 + 5).value = readVals("VppRead2")
+        ws.Cells(dataRow, col1 + 5).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("VppRead2")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 5).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 5).Font.Bold = True
+        End If
+        Dim cleanedVppRead2 As String
+        cleanedVppRead2 = CleanNumericValue(CStr(readVals("VppRead2")))
+        If IsNumeric(cleanedVppRead2) And cleanedVppRead2 <> "" Then
+            Dim valVppRead2 As Double
+            valVppRead2 = CDbl(cleanedVppRead2)
+            If firstVppRead2 Then
+                maxVppRead2 = valVppRead2
+                minVppRead2 = valVppRead2
+                firstVppRead2 = False
+            Else
+                If valVppRead2 > maxVppRead2 Then maxVppRead2 = valVppRead2
+                If valVppRead2 < minVppRead2 Then minVppRead2 = valVppRead2
+            End If
+        End If
+
+        ' Vpp Read-3
+        ws.Cells(dataRow, col1 + 6).value = readVals("VppRead3")
+        ws.Cells(dataRow, col1 + 6).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("VppRead3")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 6).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 6).Font.Bold = True
+        End If
+        Dim cleanedVppRead3 As String
+        cleanedVppRead3 = CleanNumericValue(CStr(readVals("VppRead3")))
+        If IsNumeric(cleanedVppRead3) And cleanedVppRead3 <> "" Then
+            Dim valVppRead3 As Double
+            valVppRead3 = CDbl(cleanedVppRead3)
+            If firstVppRead3 Then
+                maxVppRead3 = valVppRead3
+                minVppRead3 = valVppRead3
+                firstVppRead3 = False
+            Else
+                If valVppRead3 > maxVppRead3 Then maxVppRead3 = valVppRead3
+                If valVppRead3 < minVppRead3 Then minVppRead3 = valVppRead3
+            End If
+        End If
+
+        ' Vn Read-1
+        ws.Cells(dataRow, col1 + 7).value = readVals("VnRead1")
+        ws.Cells(dataRow, col1 + 7).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("VnRead1")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 7).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 7).Font.Bold = True
+        End If
+        Dim cleanedVnRead1 As String
+        cleanedVnRead1 = CleanNumericValue(CStr(readVals("VnRead1")))
+        If IsNumeric(cleanedVnRead1) And cleanedVnRead1 <> "" Then
+            Dim valVnRead1 As Double
+            valVnRead1 = CDbl(cleanedVnRead1)
+            If firstVnRead1 Then
+                maxVnRead1 = valVnRead1
+                minVnRead1 = valVnRead1
+                firstVnRead1 = False
+            Else
+                If valVnRead1 > maxVnRead1 Then maxVnRead1 = valVnRead1
+                If valVnRead1 < minVnRead1 Then minVnRead1 = valVnRead1
+            End If
+        End If
+
+        ' Vn Read-2
+        ws.Cells(dataRow, col1 + 8).value = readVals("VnRead2")
+        ws.Cells(dataRow, col1 + 8).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("VnRead2")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 8).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 8).Font.Bold = True
+        End If
+        Dim cleanedVnRead2 As String
+        cleanedVnRead2 = CleanNumericValue(CStr(readVals("VnRead2")))
+        If IsNumeric(cleanedVnRead2) And cleanedVnRead2 <> "" Then
+            Dim valVnRead2 As Double
+            valVnRead2 = CDbl(cleanedVnRead2)
+            If firstVnRead2 Then
+                maxVnRead2 = valVnRead2
+                minVnRead2 = valVnRead2
+                firstVnRead2 = False
+            Else
+                If valVnRead2 > maxVnRead2 Then maxVnRead2 = valVnRead2
+                If valVnRead2 < minVnRead2 Then minVnRead2 = valVnRead2
+            End If
+        End If
+
+        ' Vn Read-3
+        ws.Cells(dataRow, col1 + 9).value = readVals("VnRead3")
+        ws.Cells(dataRow, col1 + 9).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("VnRead3")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 9).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 9).Font.Bold = True
+        End If
+        Dim cleanedVnRead3 As String
+        cleanedVnRead3 = CleanNumericValue(CStr(readVals("VnRead3")))
+        If IsNumeric(cleanedVnRead3) And cleanedVnRead3 <> "" Then
+            Dim valVnRead3 As Double
+            valVnRead3 = CDbl(cleanedVnRead3)
+            If firstVnRead3 Then
+                maxVnRead3 = valVnRead3
+                minVnRead3 = valVnRead3
+                firstVnRead3 = False
+            Else
+                If valVnRead3 > maxVnRead3 Then maxVnRead3 = valVnRead3
+                If valVnRead3 < minVnRead3 Then minVnRead3 = valVnRead3
+            End If
+        End If
+
+        ' dV21
+        ws.Cells(dataRow, col1 + 10).value = readVals("dV21")
+        ws.Cells(dataRow, col1 + 10).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("dV21")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 10).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 10).Font.Bold = True
+        End If
+        Dim cleaneddV21 As String
+        cleaneddV21 = CleanNumericValue(CStr(readVals("dV21")))
+        If IsNumeric(cleaneddV21) And cleaneddV21 <> "" Then
+            Dim valdV21 As Double
+            valdV21 = CDbl(cleaneddV21)
+            If firstdV21 Then
+                maxdV21 = valdV21
+                mindV21 = valdV21
+                firstdV21 = False
+            Else
+                If valdV21 > maxdV21 Then maxdV21 = valdV21
+                If valdV21 < mindV21 Then mindV21 = valdV21
+            End If
+        End If
+
+        ' dV31
+        ws.Cells(dataRow, col1 + 11).value = readVals("dV31")
+        ws.Cells(dataRow, col1 + 11).Interior.Color = RGB(225, 245, 254)
+        If InStr(CStr(readVals("dV31")), "?") > 0 Then
+            ws.Cells(dataRow, col1 + 11).Font.Color = RGB(255, 0, 0)
+            ws.Cells(dataRow, col1 + 11).Font.Bold = True
+        End If
+        Dim cleaneddV31 As String
+        cleaneddV31 = CleanNumericValue(CStr(readVals("dV31")))
+        If IsNumeric(cleaneddV31) And cleaneddV31 <> "" Then
+            Dim valdV31 As Double
+            valdV31 = CDbl(cleaneddV31)
+            If firstdV31 Then
+                maxdV31 = valdV31
+                mindV31 = valdV31
+                firstdV31 = False
+            Else
+                If valdV31 > maxdV31 Then maxdV31 = valdV31
+                If valdV31 < mindV31 Then mindV31 = valdV31
+            End If
+        End If
+
+        dataRow = dataRow + 1
+    Next snKey
+
+    ' ========== 6. Maximum 列 ==========
+    ws.Cells(dataRow, col1).value = "Maximum"
+    ws.Cells(dataRow, col1).Font.Bold = True
+    ws.Cells(dataRow, col1).Interior.Color = RGB(179, 229, 252)
+
+    If Not firstVdcRead1 Then ws.Cells(dataRow, col1 + 1).value = Format(maxVdcRead1, "0.000")
+    If Not firstVdcRead2 Then ws.Cells(dataRow, col1 + 2).value = Format(maxVdcRead2, "0.000")
+    If Not firstVdcRead3 Then ws.Cells(dataRow, col1 + 3).value = Format(maxVdcRead3, "0.000")
+    If Not firstVppRead1 Then ws.Cells(dataRow, col1 + 4).value = Format(maxVppRead1, "0.000")
+    If Not firstVppRead2 Then ws.Cells(dataRow, col1 + 5).value = Format(maxVppRead2, "0.000")
+    If Not firstVppRead3 Then ws.Cells(dataRow, col1 + 6).value = Format(maxVppRead3, "0.000")
+    If Not firstVnRead1 Then ws.Cells(dataRow, col1 + 7).value = Format(maxVnRead1, "0.000")
+    If Not firstVnRead2 Then ws.Cells(dataRow, col1 + 8).value = Format(maxVnRead2, "0.000")
+    If Not firstVnRead3 Then ws.Cells(dataRow, col1 + 9).value = Format(maxVnRead3, "0.000")
+    If Not firstdV21 Then ws.Cells(dataRow, col1 + 10).value = Format(maxdV21, "0.000")
+    If Not firstdV31 Then ws.Cells(dataRow, col1 + 11).value = Format(maxdV31, "0.000")
+
+    dataRow = dataRow + 1
+
+    ' ========== 7. Minimum 列 ==========
+    ws.Cells(dataRow, col1).value = "Minimum"
+    ws.Cells(dataRow, col1).Font.Bold = True
+    ws.Cells(dataRow, col1).Interior.Color = RGB(179, 229, 252)
+
+    If Not firstVdcRead1 Then ws.Cells(dataRow, col1 + 1).value = Format(minVdcRead1, "0.000")
+    If Not firstVdcRead2 Then ws.Cells(dataRow, col1 + 2).value = Format(minVdcRead2, "0.000")
+    If Not firstVdcRead3 Then ws.Cells(dataRow, col1 + 3).value = Format(minVdcRead3, "0.000")
+    If Not firstVppRead1 Then ws.Cells(dataRow, col1 + 4).value = Format(minVppRead1, "0.000")
+    If Not firstVppRead2 Then ws.Cells(dataRow, col1 + 5).value = Format(minVppRead2, "0.000")
+    If Not firstVppRead3 Then ws.Cells(dataRow, col1 + 6).value = Format(minVppRead3, "0.000")
+    If Not firstVnRead1 Then ws.Cells(dataRow, col1 + 7).value = Format(minVnRead1, "0.000")
+    If Not firstVnRead2 Then ws.Cells(dataRow, col1 + 8).value = Format(minVnRead2, "0.000")
+    If Not firstVnRead3 Then ws.Cells(dataRow, col1 + 9).value = Format(minVnRead3, "0.000")
+    If Not firstdV21 Then ws.Cells(dataRow, col1 + 10).value = Format(mindV21, "0.000")
+    If Not firstdV31 Then ws.Cells(dataRow, col1 + 11).value = Format(mindV31, "0.000")
+
+    ' ========== 8. 設置欄寬 ==========
+    ws.Columns(col1).ColumnWidth = 12
+    For colIdx = col1 + 1 To col1 + 11
+        ws.Columns(colIdx).ColumnWidth = 12
+    Next colIdx
+End Sub
 
 
 
