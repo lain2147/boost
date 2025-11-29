@@ -1,0 +1,218 @@
+空白數據問題修復補丁
+======================
+
+問題：EJ-0001.TXT 中的序列標題括號內為空 "()"，導致 Input/Output 類型無法正確識別和處理。
+
+修復方法：添加動態類型識別函數，根據數據內容而非標題來判斷 Input/Output 子類型。
+
+================================================================================
+步驟 1: 在 FindAllSequences 函數之前添加新函數 DetectInputOutputTypeFromData
+================================================================================
+
+位置：在 Function FindAllSequences(lines() As String) As Object 之前（約行 138 之前）
+
+添加以下完整函數：
+
+================================================================================
+' 從數據內容動態識別 InputOutput 子類型
+' 用於處理括號內為空的新型 TXT 格式，如 "SEQ.7: Input/Output Test () ---------- PASS"
+Function DetectInputOutputTypeFromData(lines() As String, startLine As Long) As String
+    Dim i As Long
+    Dim seqEndLine As Long
+    Dim lineText As String
+
+    ' 確定序列結束行
+    seqEndLine = startLine + 50
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+
+    ' 掃描數據區塊，尋找特徵關鍵字
+    Dim hasIinrms As Boolean, hasPin As Boolean, hasEff As Boolean
+    Dim hasVinSpec As Boolean, hasIdc As Boolean
+    hasIinrms = False
+    hasPin = False
+    hasEff = False
+    hasVinSpec = False
+    hasIdc = False
+
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = Trim(lines(i))
+
+        ' 檢查是否包含特定關鍵字（行首判斷確保精確）
+        If Left(lineText, 6) = "Iinrms" Then hasIinrms = True
+        If Left(lineText, 3) = "Pin" And InStr(lineText, "Max") > 0 Then hasPin = True
+        If Left(lineText, 3) = "Eff" And (InStr(lineText, "Max") > 0 Or InStr(lineText, "Min") > 0) Then hasEff = True
+
+        ' 檢查 Vin 規格行（與 Eff 行在同一行的情況）
+        If InStr(lineText, "Vin") > 0 And InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 Then
+            hasVinSpec = True
+        End If
+
+        ' 檢查是否有 Idc Read 欄位
+        If InStr(lineText, "Idc Max") > 0 Or InStr(lineText, "Idc Min") > 0 Or InStr(lineText, "Idc Read") > 0 Then
+            hasIdc = True
+        End If
+    Next i
+
+    ' 根據特徵判斷類型
+    ' 優先順序：Eff > Pin > Iin > General
+    If hasEff Then
+        ' Eff 類型：有 Eff 規格
+        DetectInputOutputTypeFromData = "InputOutput_Eff"
+        Debug.Print "  → 動態識別為 InputOutput_Eff (找到 Eff 規格)"
+    ElseIf hasPin And Not hasIinrms Then
+        ' Pin 類型：有 Pin 但沒有 Iinrms
+        DetectInputOutputTypeFromData = "InputOutput_Pin"
+        Debug.Print "  → 動態識別為 InputOutput_Pin (找到 Pin, 無 Iinrms)"
+    ElseIf hasIinrms Then
+        ' Iin 類型：有 Iinrms
+        DetectInputOutputTypeFromData = "InputOutput_Iin"
+        Debug.Print "  → 動態識別為 InputOutput_Iin (找到 Iinrms)"
+    ElseIf hasVinSpec Or hasIdc Then
+        ' General 類型：有 Vin 規格或 Idc 讀值
+        DetectInputOutputTypeFromData = "InputOutput_General"
+        Debug.Print "  → 動態識別為 InputOutput_General (找到 Vin 規格或 Idc)"
+    Else
+        ' 默認為 General 類型
+        DetectInputOutputTypeFromData = "InputOutput_General"
+        Debug.Print "  → 默認識別為 InputOutput_General (無特定特徵)"
+    End If
+End Function
+================================================================================
+
+步驟 2: 修改 FindAllSequences 函數中的 Input/Output 識別邏輯
+================================================================================
+
+位置：約行 274-299
+
+將以下代碼：
+
+        ' ? 關鍵修正:精確判斷 Input/Output 類型
+        If inFirstUnit And InStr(lines(i), "Input/Output") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+
+            ' 判斷是哪種 InputOutput 類型
+            If InStr(lines(i), "Iin<") > 0 Or InStr(lines(i), "Iin <") > 0 Then
+                seqType = "InputOutput_Iin"
+            ElseIf InStr(lines(i), "Pin<") > 0 Or InStr(lines(i), "Pin <") > 0 Then
+                seqType = "InputOutput_Pin"
+            ElseIf InStr(lines(i), "Eff.") > 0 Or (InStr(lines(i), "Eff") > 0 And InStr(lines(i), "Eff>") > 0) Then
+                seqType = "InputOutput_Eff"
+            Else
+                ' 其他所有 Input/Output 測試都歸類為通用類型
+                seqType = "InputOutput_General"
+            End If
+
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractInputOutputParams(lines, seqStartLine, loadName, seqType)
+            seqList.Add seqList.Count, seqInfo
+        End If
+
+替換為：
+
+        ' ? 關鍵修正:精確判斷 Input/Output 類型（支援括號內為空的新格式）
+        If inFirstUnit And InStr(lines(i), "Input/Output") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+
+            ' 第一階段：從標題識別（兼容舊格式）
+            If InStr(lines(i), "Iin<") > 0 Or InStr(lines(i), "Iin <") > 0 Then
+                seqType = "InputOutput_Iin"
+                Debug.Print "找到 Input/Output (Iin<) at line " & i
+            ElseIf InStr(lines(i), "Pin<") > 0 Or InStr(lines(i), "Pin <") > 0 Then
+                seqType = "InputOutput_Pin"
+                Debug.Print "找到 Input/Output (Pin<) at line " & i
+            ElseIf InStr(lines(i), "Eff.") > 0 Or InStr(lines(i), "Eff>") > 0 Then
+                seqType = "InputOutput_Eff"
+                Debug.Print "找到 Input/Output (Eff) at line " & i
+            Else
+                ' 第二階段：從數據內容動態識別（新格式支援）
+                Debug.Print "找到 Input/Output () at line " & i & " - 使用動態識別"
+                seqType = DetectInputOutputTypeFromData(lines, seqStartLine)
+            End If
+
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractInputOutputParams(lines, seqStartLine, loadName, seqType)
+            seqList.Add seqList.Count, seqInfo
+        End If
+
+================================================================================
+
+步驟 3: 測試修復
+================================================================================
+
+1. 打開 EXCEL_TO_TXT.xlsm
+2. 按 Alt+F11 進入 VBA Editor
+3. 找到 Module（包含 FindAllSequences 函數的模組）
+4. 應用上述兩個修改
+5. 保存（Ctrl+S）
+6. 關閉 VBA Editor（Alt+Q）
+7. 運行宏並選擇 EJ-0001.TXT
+8. 檢查 Immediate Window (Ctrl+G) 的 Debug.Print 輸出
+9. 驗證 Excel 輸出
+
+================================================================================
+
+預期結果：
+================================================================================
+
+Debug 輸出應該顯示：
+---
+找到 Input/Output () at line 48 - 使用動態識別
+  → 動態識別為 InputOutput_General (找到 Vin 規格或 Idc)
+---
+
+Excel 輸出應該有：
+- SEQ.3: Input/Output Test () 的完整數據
+- 參數：Vin, Fin, DelayTime, MeasTime, LoadName, Mode 等
+- 讀值：Iinrms, Pin, Pdc, Eff, Vin, Idc, Vdc, Vpp, Vn
+- MAX/MIN 計算正確
+
+================================================================================
+
+注意事項：
+================================================================================
+
+1. 此修復向後兼容：
+   - 舊格式（括號內有內容）仍使用第一階段識別
+   - 新格式（括號內為空）使用第二階段動態識別
+
+2. Debug.Print 可以幫助診斷：
+   - 保留 Debug.Print 語句便於後續調試
+   - 在 Immediate Window (Ctrl+G) 中查看輸出
+
+3. 如果仍有問題：
+   - 檢查 ExtractInputOutputParams 函數是否正確處理 InputOutput_General 類型
+   - 檢查 ExtractAllInputOutputReads 函數是否正確提取讀值
+   - 檢查 CreateOneInputOutputSection 函數的欄位布局
+
+================================================================================
+
+修復完成標記：
+================================================================================
+
+完成後請勾選：
+[ ] 添加 DetectInputOutputTypeFromData 函數
+[ ] 修改 FindAllSequences 的 Input/Output 識別邏輯
+[ ] 測試 EJ-0001.TXT 的 SEQ.3
+[ ] 檢查 Debug 輸出
+[ ] 驗證 Excel 數據完整性
+[ ] 測試其他 Input/Output 變體（回歸測試）
+
+================================================================================

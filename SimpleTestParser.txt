@@ -1,0 +1,494 @@
+Option Explicit
+
+' ============================================
+' 簡化版 TXT 測試報告解析器
+' 專門針對 EJ-0001.TXT / EJ-0002.TXT 格式
+' ============================================
+
+Sub ParseTestReport()
+    Dim filePath As Variant
+    Dim fileContent As String
+    Dim lines() As String
+    Dim wb As Workbook
+    Dim ws As Worksheet
+
+    ' 選擇 TXT 文件
+    filePath = Application.GetOpenFilename("Text Files (*.txt), *.txt", , "選擇測試報告")
+    If filePath = False Then Exit Sub
+
+    ' 讀取文件
+    fileContent = ReadFile(CStr(filePath))
+    If fileContent = "" Then
+        MsgBox "無法讀取文件！", vbCritical
+        Exit Sub
+    End If
+
+    lines = Split(fileContent, vbCrLf)
+
+    ' 創建新工作簿
+    Set wb = Workbooks.Add
+    Set ws = wb.Sheets(1)
+
+    ' 解析並寫入數據
+    Call ParseAndWrite(ws, lines)
+
+    ' 詢問存檔
+    Dim savePath As Variant
+    savePath = Application.GetSaveAsFilename( _
+        InitialFileName:="TestReport_" & Format(Now, "yyyymmdd_hhnnss") & ".xlsx", _
+        FileFilter:="Excel Files (*.xlsx), *.xlsx")
+
+    If savePath <> False Then
+        wb.SaveAs fileName:=CStr(savePath), FileFormat:=xlOpenXMLWorkbook
+        MsgBox "已存檔至：" & vbCrLf & savePath, vbInformation
+    End If
+End Sub
+
+' ============================================
+' 解析並寫入數據
+' ============================================
+Sub ParseAndWrite(ws As Worksheet, lines() As String)
+    Dim i As Long
+    Dim currentCol As Long
+    Dim currentSerial As String
+    Dim inSeq As Boolean
+    Dim seqTitle As String
+    Dim seqStartLine As Long
+
+    currentCol = 1
+    currentSerial = ""
+    inSeq = False
+
+    ' 掃描所有行
+    For i = 0 To UBound(lines)
+        ' 提取 Serial No
+        If InStr(lines(i), "Serial No") > 0 Then
+            currentSerial = ExtractSerial(lines(i))
+            Debug.Print "Found Serial: " & currentSerial
+        End If
+
+        ' 識別序列開始
+        If InStr(lines(i), "SEQ.") > 0 And InStr(lines(i), "PASS") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            inSeq = True
+
+            Debug.Print "========================================="
+            Debug.Print "Found SEQ at line " & i & ": " & seqTitle
+
+            ' 判斷測試類型並處理
+            If InStr(seqTitle, "Turn On") > 0 Then
+                currentCol = ProcessTurnOn(ws, lines, i, currentSerial, currentCol)
+            ElseIf InStr(seqTitle, "Hold Up") > 0 Then
+                currentCol = ProcessHoldUp(ws, lines, i, currentSerial, currentCol)
+            ElseIf InStr(seqTitle, "Short Circuit") > 0 Then
+                currentCol = ProcessShortCircuit(ws, lines, i, currentSerial, currentCol)
+            ElseIf InStr(seqTitle, "Load Regulation") > 0 Then
+                currentCol = ProcessLoadRegulation(ws, lines, i, currentSerial, currentCol)
+            ElseIf InStr(seqTitle, "Input/Output") > 0 Then
+                currentCol = ProcessInputOutput(ws, lines, i, currentSerial, currentCol)
+            End If
+        End If
+    Next i
+
+    ' 調整欄寬
+    ws.Cells.EntireColumn.AutoFit
+End Sub
+
+' ============================================
+' 處理 Load Regulation 測試
+' ============================================
+Function ProcessLoadRegulation(ws As Worksheet, lines() As String, startLine As Long, _
+                                currentSerial As String, startCol As Long) As Long
+    Dim row As Long, col As Long
+    Dim i As Long, parts() As String
+    Dim seqTitle As String
+
+    seqTitle = Trim(lines(startLine))
+    col = startCol
+    row = 1
+
+    ' 標題
+    ws.Cells(row, col).value = seqTitle
+    ws.Cells(row, col).Font.Bold = True
+    ws.Cells(row, col).Interior.Color = RGB(189, 215, 238)
+    row = row + 1
+
+    ' 參數標題
+    ws.Cells(row, col).value = "Condition"
+    ws.Cells(row, col + 1).value = "Value"
+    ws.Cells(row, col).Font.Bold = True
+    ws.Cells(row, col + 1).Font.Bold = True
+    ws.Cells(row, col).Interior.Color = RGB(255, 224, 178)
+    ws.Cells(row, col + 1).Interior.Color = RGB(255, 224, 178)
+    row = row + 1
+
+    ' 提取參數（往後掃描 50 行）
+    Dim paramRow As Long
+    paramRow = row
+
+    For i = startLine To startLine + 50
+        If i > UBound(lines) Then Exit For
+
+        ' Vin, Fin
+        If InStr(lines(i), "Vin =") > 0 And InStr(lines(i), "Fin =") > 0 Then
+            ws.Cells(paramRow, col).value = "Vin"
+            ws.Cells(paramRow, col + 1).value = ExtractNum(lines(i), "Vin")
+            paramRow = paramRow + 1
+            ws.Cells(paramRow, col).value = "Fin"
+            ws.Cells(paramRow, col + 1).value = ExtractNum(lines(i), "Fin")
+            paramRow = paramRow + 1
+        End If
+
+        ' Load Name (1. 開頭的行)
+        If Trim(Left(lines(i), 2)) = "1." And InStr(lines(i - 1), "Load Name") > 0 Then
+            parts = SplitLine(lines(i))
+            If UBound(parts) >= 1 Then
+                ws.Cells(paramRow, col).value = "Load Name"
+                ws.Cells(paramRow, col + 1).value = parts(1)
+                paramRow = paramRow + 1
+            End If
+        End If
+
+        ' Vdc/Vpp 讀值標題行
+        If InStr(lines(i), "Read-1") > 0 And InStr(lines(i), "Read-2") > 0 Then
+            Debug.Print "Found Load Regulation readings header at line " & i
+
+            ' 讀值標題
+            Dim readRow As Long
+            readRow = paramRow + 2
+            ws.Cells(readRow, col).value = "S/N"
+            ws.Cells(readRow, col + 1).value = "Vdc-1"
+            ws.Cells(readRow, col + 2).value = "Vdc-2"
+            ws.Cells(readRow, col + 3).value = "Vdc-3"
+            ws.Cells(readRow, col + 4).value = "Vpp-1"
+            ws.Cells(readRow, col + 5).value = "Vpp-2"
+            ws.Cells(readRow, col + 6).value = "Vpp-3"
+            ws.Cells(readRow, col).Font.Bold = True
+            ws.Cells(readRow, col).Interior.Color = RGB(179, 229, 252)
+            readRow = readRow + 1
+
+            ' Vdc 讀值
+            If i + 1 <= UBound(lines) And InStr(lines(i + 1), "Vdc") > 0 Then
+                parts = SplitLine(lines(i + 1))
+                Debug.Print "Vdc line: " & lines(i + 1)
+                Debug.Print "Parts count: " & UBound(parts)
+
+                ws.Cells(readRow, col).value = currentSerial
+                If UBound(parts) >= 3 Then ws.Cells(readRow, col + 1).value = parts(3)
+                If UBound(parts) >= 4 Then ws.Cells(readRow, col + 2).value = parts(4)
+                If UBound(parts) >= 5 Then ws.Cells(readRow, col + 3).value = parts(5)
+            End If
+
+            ' Vpp 讀值
+            If i + 2 <= UBound(lines) And InStr(lines(i + 2), "Vpp") > 0 Then
+                parts = SplitLine(lines(i + 2))
+                Debug.Print "Vpp line: " & lines(i + 2)
+
+                If UBound(parts) >= 3 Then ws.Cells(readRow, col + 4).value = parts(3)
+                If UBound(parts) >= 4 Then ws.Cells(readRow, col + 5).value = parts(4)
+                If UBound(parts) >= 5 Then ws.Cells(readRow, col + 6).value = parts(5)
+            End If
+
+            Exit For
+        End If
+    Next i
+
+    ProcessLoadRegulation = col + 8  ' 返回下一個開始欄
+End Function
+
+' ============================================
+' 處理 Input/Output 測試
+' ============================================
+Function ProcessInputOutput(ws As Worksheet, lines() As String, startLine As Long, _
+                            currentSerial As String, startCol As Long) As Long
+    Dim row As Long, col As Long
+    Dim i As Long, parts() As String
+    Dim seqTitle As String
+
+    seqTitle = Trim(lines(startLine))
+    col = startCol
+    row = 1
+
+    ' 標題
+    ws.Cells(row, col).value = seqTitle
+    ws.Cells(row, col).Font.Bold = True
+    ws.Cells(row, col).Interior.Color = RGB(255, 235, 205)
+    row = row + 1
+
+    ' 參數標題
+    ws.Cells(row, col).value = "Condition"
+    ws.Cells(row, col + 1).value = "Value"
+    ws.Cells(row, col).Font.Bold = True
+    ws.Cells(row, col + 1).Font.Bold = True
+    row = row + 1
+
+    ' 提取參數
+    Dim paramRow As Long
+    paramRow = row
+
+    For i = startLine To startLine + 50
+        If i > UBound(lines) Then Exit For
+
+        ' Vin, Fin
+        If InStr(lines(i), "Vin =") > 0 And InStr(lines(i), "Fin =") > 0 Then
+            ws.Cells(paramRow, col).value = "Vin"
+            ws.Cells(paramRow, col + 1).value = ExtractNum(lines(i), "Vin")
+            paramRow = paramRow + 1
+            ws.Cells(paramRow, col).value = "Fin"
+            ws.Cells(paramRow, col + 1).value = ExtractNum(lines(i), "Fin")
+            paramRow = paramRow + 1
+        End If
+
+        ' 讀值區（Max Min Reading 標題）
+        If InStr(lines(i), "Max") > 0 And InStr(lines(i), "Min") > 0 And InStr(lines(i), "Reading") > 0 Then
+            Debug.Print "Found InputOutput readings at line " & i
+
+            Dim readRow As Long
+            readRow = paramRow + 2
+
+            ' 標題
+            ws.Cells(readRow, col).value = "S/N"
+            ws.Cells(readRow, col + 1).value = "Iinrms"
+            ws.Cells(readRow, col + 2).value = "Pin"
+            ws.Cells(readRow, col + 3).value = "Eff"
+            ws.Cells(readRow, col).Font.Bold = True
+            readRow = readRow + 1
+
+            ' 數據（往下掃描）
+            ws.Cells(readRow, col).value = currentSerial
+
+            ' Iinrms (第1行)
+            If i + 1 <= UBound(lines) And InStr(lines(i + 1), "Iinrms") > 0 Then
+                parts = SplitLine(lines(i + 1))
+                If UBound(parts) >= 3 Then ws.Cells(readRow, col + 1).value = parts(3)
+            End If
+
+            ' Pin (第2行)
+            If i + 2 <= UBound(lines) And InStr(lines(i + 2), "Pin") > 0 Then
+                parts = SplitLine(lines(i + 2))
+                If UBound(parts) >= 3 Then ws.Cells(readRow, col + 2).value = parts(3)
+            End If
+
+            ' Eff (第4行)
+            If i + 4 <= UBound(lines) And InStr(lines(i + 4), "Eff") > 0 Then
+                parts = SplitLine(lines(i + 4))
+                If UBound(parts) >= 3 Then ws.Cells(readRow, col + 3).value = parts(3)
+            End If
+
+            Exit For
+        End If
+    Next i
+
+    ProcessInputOutput = col + 5
+End Function
+
+' ============================================
+' 處理 Turn On 測試
+' ============================================
+Function ProcessTurnOn(ws As Worksheet, lines() As String, startLine As Long, _
+                       currentSerial As String, startCol As Long) As Long
+    Dim row As Long, col As Long
+    col = startCol
+    row = 1
+
+    ' 標題
+    ws.Cells(row, col).value = Trim(lines(startLine))
+    ws.Cells(row, col).Font.Bold = True
+    ws.Cells(row, col).Interior.Color = RGB(198, 224, 180)
+    row = row + 2
+
+    ' 參數 (簡化)
+    ws.Cells(row, col).value = "Condition"
+    ws.Cells(row, col + 1).value = "Value"
+    ws.Cells(row, col).Font.Bold = True
+    row = row + 1
+
+    ' 讀值標題
+    row = row + 5
+    ws.Cells(row, col).value = "S/N"
+    ws.Cells(row, col + 1).value = "Ton Read"
+    ws.Cells(row, col).Font.Bold = True
+    row = row + 1
+
+    ' 讀值 (尋找 Ton Max 行)
+    Dim i As Long, parts() As String
+    For i = startLine To startLine + 30
+        If i > UBound(lines) Then Exit For
+        If InStr(lines(i), "Ton Max") > 0 Then
+            If i + 1 <= UBound(lines) And Trim(Left(lines(i + 1), 2)) = "1." Then
+                parts = SplitLine(lines(i + 1))
+                If UBound(parts) >= 3 Then
+                    ws.Cells(row, col).value = currentSerial
+                    ws.Cells(row, col + 1).value = parts(3)
+                End If
+            End If
+            Exit For
+        End If
+    Next i
+
+    ProcessTurnOn = col + 3
+End Function
+
+' ============================================
+' 處理 Hold Up 測試
+' ============================================
+Function ProcessHoldUp(ws As Worksheet, lines() As String, startLine As Long, _
+                       currentSerial As String, startCol As Long) As Long
+    Dim row As Long, col As Long
+    col = startCol
+    row = 1
+
+    ws.Cells(row, col).value = Trim(lines(startLine))
+    ws.Cells(row, col).Font.Bold = True
+    ws.Cells(row, col).Interior.Color = RGB(255, 218, 224)
+    row = row + 7
+
+    ws.Cells(row, col).value = "S/N"
+    ws.Cells(row, col + 1).value = "Tds"
+    ws.Cells(row, col + 2).value = "Tdl"
+    ws.Cells(row, col).Font.Bold = True
+    row = row + 1
+
+    ws.Cells(row, col).value = currentSerial
+
+    ' 尋找 Tds/Tdl
+    Dim i As Long, parts() As String
+    For i = startLine To startLine + 30
+        If i > UBound(lines) Then Exit For
+        If InStr(lines(i), "Tds") > 0 Then
+            parts = SplitLine(lines(i))
+            Dim idx As Integer
+            For idx = 0 To UBound(parts)
+                If parts(idx) = "Tds" And idx + 3 <= UBound(parts) Then
+                    ws.Cells(row, col + 1).value = parts(idx + 3)
+                    Exit For
+                End If
+            Next idx
+        End If
+        If InStr(lines(i), "Tdl") > 0 Then
+            parts = SplitLine(lines(i))
+            For idx = 0 To UBound(parts)
+                If parts(idx) = "Tdl" And idx + 3 <= UBound(parts) Then
+                    ws.Cells(row, col + 2).value = parts(idx + 3)
+                    Exit For
+                End If
+            Next idx
+        End If
+    Next i
+
+    ProcessHoldUp = col + 4
+End Function
+
+' ============================================
+' 處理 Short Circuit 測試
+' ============================================
+Function ProcessShortCircuit(ws As Worksheet, lines() As String, startLine As Long, _
+                             currentSerial As String, startCol As Long) As Long
+    Dim row As Long, col As Long
+    col = startCol
+    row = 1
+
+    ws.Cells(row, col).value = Trim(lines(startLine))
+    ws.Cells(row, col).Font.Bold = True
+    ws.Cells(row, col).Interior.Color = RGB(189, 215, 238)
+    row = row + 7
+
+    ws.Cells(row, col).value = "S/N"
+    ws.Cells(row, col + 1).value = "Pin"
+    ws.Cells(row, col).Font.Bold = True
+    row = row + 1
+
+    ws.Cells(row, col).value = currentSerial
+
+    ' 尋找 Pin
+    Dim i As Long, parts() As String
+    For i = startLine To startLine + 30
+        If i > UBound(lines) Then Exit For
+        If InStr(lines(i), "Pin") > 0 And Left(Trim(lines(i)), 3) = "Pin" Then
+            parts = SplitLine(lines(i))
+            ' Pin 通常在 * * 之後
+            Dim starCount As Integer, idx As Integer
+            starCount = 0
+            For idx = 0 To UBound(parts)
+                If parts(idx) = "*" Then
+                    starCount = starCount + 1
+                ElseIf starCount = 2 Then
+                    ws.Cells(row, col + 1).value = parts(idx)
+                    Exit For
+                End If
+            Next idx
+            Exit For
+        End If
+    Next i
+
+    ProcessShortCircuit = col + 3
+End Function
+
+' ============================================
+' 輔助函數
+' ============================================
+
+Function ReadFile(filePath As String) As String
+    Dim fileNum As Integer, content As String
+    On Error GoTo ErrorHandler
+    fileNum = FreeFile
+    Open filePath For Binary As #fileNum
+    content = Space$(LOF(fileNum))
+    Get #fileNum, , content
+    Close #fileNum
+    ReadFile = content
+    Exit Function
+ErrorHandler:
+    ReadFile = ""
+    If fileNum <> 0 Then Close #fileNum
+End Function
+
+Function ExtractSerial(line As String) As String
+    Dim pos As Long
+    pos = InStr(line, "Serial No")
+    If pos > 0 Then
+        ExtractSerial = Trim(Mid(line, pos + 10))
+        ExtractSerial = Replace(ExtractSerial, ":", "")
+    Else
+        ExtractSerial = ""
+    End If
+End Function
+
+Function ExtractNum(text As String, keyword As String) As String
+    Dim startPos As Long, eqPos As Long, i As Long
+    Dim result As String, char As String
+
+    startPos = InStr(text, keyword)
+    If startPos = 0 Then
+        ExtractNum = ""
+        Exit Function
+    End If
+
+    eqPos = InStr(startPos, text, "=")
+    If eqPos = 0 Then
+        ExtractNum = ""
+        Exit Function
+    End If
+
+    result = ""
+    For i = eqPos + 1 To Len(text)
+        char = Mid(text, i, 1)
+        If char >= "0" And char <= "9" Or char = "." Or char = "-" Then
+            result = result & char
+        ElseIf result <> "" Then
+            Exit For
+        End If
+    Next i
+
+    ExtractNum = Trim(result)
+End Function
+
+Function SplitLine(line As String) As String()
+    Dim cleaned As String
+    cleaned = line
+    Do While InStr(cleaned, "  ") > 0
+        cleaned = Replace(cleaned, "  ", " ")
+    Loop
+    SplitLine = Split(Trim(cleaned), " ")
+End Function
