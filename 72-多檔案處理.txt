@@ -51,12 +51,13 @@ Sub ImportTurnOnTestReport()
     Application.StatusBar = "Parsing test data..."
     lines = Split(fileContent, vbCrLf)
 
+    Dim modelName As String
     Dim customerName As String
     Dim inspectorName As String
     Dim testDate As String
     Dim unitCount As Long
 
-    ExtractHeaderInfo lines, customerName, inspectorName, testDate, unitCount
+    ExtractHeaderInfo lines, modelName, customerName, inspectorName, testDate, unitCount
     Debug.Print "Unit count detected: " & unitCount
 
     ' Status: Creating workbook
@@ -89,8 +90,36 @@ Sub ImportTurnOnTestReport()
 
     ' Status: Formatting worksheet
     Application.StatusBar = "Formatting worksheet..."
+
+    ' 動態組合工作表名稱（與檔名邏輯一致）
     Dim sheetName As String
-    sheetName = customerName & "_" & testDate & "_" & unitCount
+    Dim sheetParts() As String
+    Dim sheetPartCount As Integer
+    sheetPartCount = 0
+
+    ReDim sheetParts(0 To 3)
+
+    ' 檢查 Model Name
+    If IsValidFieldValue(modelName) Then
+        sheetParts(sheetPartCount) = Trim(modelName)
+        sheetPartCount = sheetPartCount + 1
+    End If
+
+    ' 檢查 Customer
+    If IsValidFieldValue(customerName) Then
+        sheetParts(sheetPartCount) = Trim(customerName)
+        sheetPartCount = sheetPartCount + 1
+    End If
+
+    ' 日期和數量永遠包含
+    sheetParts(sheetPartCount) = Trim(testDate)
+    sheetPartCount = sheetPartCount + 1
+    sheetParts(sheetPartCount) = CStr(unitCount)
+    sheetPartCount = sheetPartCount + 1
+
+    ' 組合工作表名稱
+    ReDim Preserve sheetParts(0 To sheetPartCount - 1)
+    sheetName = Join(sheetParts, "_")
     sheetName = CleanSheetName(sheetName)
     ws.Name = sheetName
 
@@ -100,7 +129,7 @@ Sub ImportTurnOnTestReport()
     ' Status: Saving file
     Application.StatusBar = "Saving file..."
     Dim savedPath As String
-    savedPath = SaveWithCustomName(newWb, customerName, testDate, unitCount)
+    savedPath = SaveWithCustomName(newWb, modelName, customerName, testDate, unitCount)
 
     ' Calculate total processing time
     Dim elapsedTime As Double
@@ -1938,20 +1967,19 @@ Sub CreateOneLoadRegulationSection(ws As Worksheet, seqInfo As Object, lines() A
     Dim actualLoadName As String
     actualLoadName = params("LoadName")
 
-    ' 22 個參數
+    ' 19 個參數（已移除 BITS-1、BITS-2、BITS-3）
     Dim paramNames As Variant, paramKeys As Variant, i As Integer
     paramNames = Array("Vin", "Fin", "Delay Time", "Meas. Time", _
                        actualLoadName & "_Load Name", actualLoadName & "_MODE", _
                        actualLoadName & "_Ifs", actualLoadName & "_Vfs", actualLoadName & "_Meas", _
                        actualLoadName & "_Vdc Filter", actualLoadName & "_Noise Filter", actualLoadName & "_Von", _
-                       actualLoadName & "_BITS-1", actualLoadName & "_BITS-2", actualLoadName & "_BITS-3", _
                        actualLoadName & "_SLEW Rate", _
                        actualLoadName & "_I/R-1", actualLoadName & "_I/R-2", actualLoadName & "_I/R-3", _
                        actualLoadName & "_Vdc Max", actualLoadName & "_Vdc Min", actualLoadName & "_Vpp Max")
     paramKeys = Array("Vin", "Fin", "DelayTime", "MeasTime", _
                       "LoadName", "Mode", "Ifs", "Vfs", "Meas", _
                       "VdcFilter", "NoiseFilter", "Von", _
-                      "Bits1", "Bits2", "Bits3", "SlewRate", _
+                      "SlewRate", _
                       "IR1", "IR2", "IR3", _
                       "VdcMax", "VdcMin", "VppMax")
 
@@ -3425,13 +3453,21 @@ Function SplitLine(lineText As String) As String()
     SplitLine = Split(Trim(cleanedLine), " ")
 End Function
 
-Sub ExtractHeaderInfo(lines() As String, ByRef customer As String, ByRef inspector As String, ByRef testDate As String, ByRef unitCount As Long)
+Sub ExtractHeaderInfo(lines() As String, ByRef modelName As String, ByRef customer As String, ByRef inspector As String, ByRef testDate As String, ByRef unitCount As Long)
     Dim i As Long
-    
+
     ' 初始化 unitCount
     unitCount = 0
-    
+
     For i = 0 To UBound(lines)
+        ' 提取 Model Name
+        If InStr(lines(i), "Model Name") > 0 Then
+            modelName = Trim(ExtractValue(lines(i), "Model Name", "Customer"))
+            If modelName = "" Then
+                modelName = Trim(ExtractValue(lines(i), "Model Name", vbCrLf))
+            End If
+        End If
+
         ' 提取 Customer
         If InStr(lines(i), "Customer") > 0 Then
             customer = Trim(ExtractValue(lines(i), "Customer", "Serial"))
@@ -3583,13 +3619,67 @@ Function ExtractValue(text As String, startDelim As String, endDelim As String) 
     ExtractValue = Trim(result)
 End Function
 
-Function SaveWithCustomName(wb As Workbook, customer As String, testDate As String, unitCount As Long) As String
+' ===== 驗證欄位值是否有效（不為空且不只包含非法字元） =====
+Function IsValidFieldValue(fieldValue As String) As Boolean
+    ' 檢查是否為空或只包含空白
+    If Trim(fieldValue) = "" Then
+        IsValidFieldValue = False
+        Exit Function
+    End If
+
+    ' 移除所有非法字元後檢查是否還有內容
+    Dim cleaned As String
+    cleaned = fieldValue
+    cleaned = Replace(cleaned, "/", "")
+    cleaned = Replace(cleaned, "\", "")
+    cleaned = Replace(cleaned, ":", "")
+    cleaned = Replace(cleaned, "*", "")
+    cleaned = Replace(cleaned, "?", "")
+    cleaned = Replace(cleaned, """", "")
+    cleaned = Replace(cleaned, "<", "")
+    cleaned = Replace(cleaned, ">", "")
+    cleaned = Trim(cleaned)
+
+    ' 如果清理後沒有內容，視為無效
+    If cleaned = "" Then
+        IsValidFieldValue = False
+    Else
+        IsValidFieldValue = True
+    End If
+End Function
+
+Function SaveWithCustomName(wb As Workbook, modelName As String, customer As String, testDate As String, unitCount As Long) As String
     ' 返回存檔路徑，如果失敗或取消則返回空字串
     Dim fileName As String, savePath As String, baseFileName As String
     Dim dirPath As String, finalPath As String
+    Dim parts() As String
+    Dim partCount As Integer
 
-    ' 構建基礎檔案名，並先清理參數中的空格
-    baseFileName = Trim(customer) & "_" & Trim(testDate) & "_" & CStr(unitCount) & "pcs"
+    ' 動態組合檔案名稱，只包含有效欄位
+    partCount = 0
+    ReDim parts(0 To 3)
+
+    ' 檢查 Model Name
+    If IsValidFieldValue(modelName) Then
+        parts(partCount) = Trim(modelName)
+        partCount = partCount + 1
+    End If
+
+    ' 檢查 Customer
+    If IsValidFieldValue(customer) Then
+        parts(partCount) = Trim(customer)
+        partCount = partCount + 1
+    End If
+
+    ' 日期和數量永遠包含
+    parts(partCount) = Trim(testDate)
+    partCount = partCount + 1
+    parts(partCount) = CStr(unitCount) & "pcs"
+    partCount = partCount + 1
+
+    ' 組合檔名
+    ReDim Preserve parts(0 To partCount - 1)
+    baseFileName = Join(parts, "_")
     baseFileName = CleanFileName(baseFileName)
     fileName = baseFileName & ".xlsx"
 
@@ -3880,7 +3970,7 @@ Function ExtractLoadRegulationParams(lines() As String, startLine As Long, loadN
                 bitsLine = lines(i + 1)
                 If Trim(Left(bitsLine, 2)) = "1." Then
                     parts = SplitLine(bitsLine)
-                    If UBound(parts) >= 1 Then params("Bits1") = parts(1)
+                    If UBound(parts) >= 1 Then params("Bits2") = parts(1)
                     If UBound(parts) >= 2 Then params("Bits2") = parts(2)
                     If UBound(parts) >= 3 Then params("Bits3") = parts(3)
                     If UBound(parts) >= 4 Then params("SlewRate") = parts(4)
@@ -4485,7 +4575,7 @@ Function GetParamRowCount(testType As String) As Long
         Case "Dynamic"
             GetParamRowCount = 15
         Case "LoadRegulation"
-            GetParamRowCount = 24  ' 1 標題 + 1 Condition/Value 標題 + 22 參數
+            GetParamRowCount = 21  ' 1 標題 + 1 Condition/Value 標題 + 19 參數（已移除 BITS-1/2/3）
         Case "InputOutput_Iin", "InputOutput_Pin"
             GetParamRowCount = 12  ' 不含 Vin Max/Min
         Case "InputOutput_Eff", "InputOutput_General"

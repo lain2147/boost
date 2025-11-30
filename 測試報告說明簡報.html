@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>電源供應器測試報告使用說明</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/reveal.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/theme/sky.min.css">
+    <style>
+        .reveal h1 { color: #2c3e50; font-size: 2.5em; }
+        .reveal h2 { color: #3498db; font-size: 2em; }
+        .reveal h3 { color: #e74c3c; font-size: 1.5em; }
+        .reveal .slides { text-align: left; }
+        .reveal table { font-size: 0.8em; }
+        .reveal table th { background-color: #3498db; color: white; }
+        .reveal table tr:nth-child(even) { background-color: #ecf0f1; }
+        .highlight-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        .feature-box {
+            background: #f8f9fa;
+            border-left: 5px solid #3498db;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        .success { color: #27ae60; font-weight: bold; }
+        .warning { color: #e74c3c; font-weight: bold; }
+        .info { color: #3498db; font-weight: bold; }
+        .badge {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 0.8em;
+            font-weight: bold;
+            margin: 5px;
+        }
+        .badge-blue { background: #3498db; color: white; }
+        .badge-green { background: #27ae60; color: white; }
+        .badge-orange { background: #e67e22; color: white; }
+        .badge-red { background: #e74c3c; color: white; }
+        .columns {
+            display: flex;
+            gap: 20px;
+        }
+        .column {
+            flex: 1;
+        }
+        ul { list-style-type: none; padding-left: 0; }
+        li:before {
+            content: "✓ ";
+            color: #27ae60;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="reveal">
+        <div class="slides">
+
+            <!-- 封面 -->
+            <section data-background-gradient="linear-gradient(135deg, #667eea 0%, #764ba2 100%)">
+                <h1 style="color: white;">📊 電源供應器</h1>
+                <h1 style="color: white;">測試報告使用說明</h1>
+                <p style="color: white; font-size: 1.2em; margin-top: 50px;">TXT 轉 Excel 自動化報告系統</p>
+                <p style="color: white; opacity: 0.8;">按 → 鍵或空白鍵開始</p>
+            </section>
+
+            <!-- 目錄 -->
+            <section>
+                <h2>📋 簡報大綱</h2>
+                <div class="feature-box">
+                    <h3>1️⃣ TXT 測試報告格式</h3>
+                    <p>了解測試報告的來源和基本結構</p>
+                </div>
+                <div class="feature-box">
+                    <h3>2️⃣ 測試類型分類邏輯</h3>
+                    <p>9 種測試類型 + 雙層判斷機制</p>
+                </div>
+                <div class="feature-box">
+                    <h3>3️⃣ 測試類型詳細說明</h3>
+                    <p>參數、讀值、Excel 欄位完整說明</p>
+                </div>
+                <div class="feature-box">
+                    <h3>4️⃣ Excel 報告結構</h3>
+                    <p>色彩分組、布局設計、特殊標記</p>
+                </div>
+            </section>
+
+            <!-- 第一章：TXT 測試報告格式 -->
+            <section>
+                <section>
+                    <h2>📄 TXT 測試報告格式說明</h2>
+                    <div class="highlight-box">
+                        <h3>報告來源</h3>
+                        <p>TXT 測試報告由電源供應器自動測試設備產生</p>
+                        <p>記錄多台測試樣品（Serial No）的測試結果</p>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>📋 報告結構</h2>
+                    <pre style="font-size: 0.6em;"><code>Customer: [客戶名稱]      Serial No: [序號1]
+Inspector: [檢驗員]
+YYYY_MM_DD: [日期]        Begin Time: [時間]
+
+SEQ.1 Turn On & Sequence Test (115V TURN ON)
+[測試參數設定]
+[測試讀值數據]
+
+SEQ.2 Hold Up Test
+[測試參數設定]
+[測試讀值數據]
+
+...
+
+Serial No: [序號2]
+SEQ.1 Turn On & Sequence Test (115V TURN ON)
+...</code></pre>
+                </section>
+
+                <section>
+                    <h2>🏷️ 基本資訊欄位</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>欄位</th>
+                                <th>說明</th>
+                                <th>範例</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Customer</strong></td>
+                                <td>客戶名稱</td>
+                                <td>ABC Company</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Inspector</strong></td>
+                                <td>檢驗員姓名</td>
+                                <td>John Doe</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Date</strong></td>
+                                <td>測試日期</td>
+                                <td>2025-01-15</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Serial No</strong></td>
+                                <td>測試樣品序號</td>
+                                <td>EJ-0001, SN-12345</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+            </section>
+
+            <!-- 第二章：測試類型分類 -->
+            <section>
+                <section>
+                    <h2>🔍 測試類型分類邏輯</h2>
+                    <div class="highlight-box">
+                        <h3>系統自動識別並處理</h3>
+                        <h1 style="color: white; text-align: center;">9 種測試類型</h1>
+                        <p style="text-align: center; font-size: 1.2em;">7 種基礎測試 + 2 種複合測試</p>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>📊 基礎測試類型（7 種）</h2>
+                    <div class="columns">
+                        <div class="column">
+                            <div class="badge badge-blue">Turn On</div>
+                            <p style="font-size: 0.8em;">開機測試</p>
+
+                            <div class="badge badge-green">Hold Up</div>
+                            <p style="font-size: 0.8em;">保持時間測試</p>
+
+                            <div class="badge badge-orange">Short Circuit</div>
+                            <p style="font-size: 0.8em;">短路保護測試</p>
+
+                            <div class="badge badge-red">Combine</div>
+                            <p style="font-size: 0.8em;">綜合負載測試</p>
+                        </div>
+                        <div class="column">
+                            <div class="badge badge-blue">OLP</div>
+                            <p style="font-size: 0.8em;">過載保護測試</p>
+
+                            <div class="badge badge-green">Dynamic</div>
+                            <p style="font-size: 0.8em;">動態負載測試</p>
+
+                            <div class="badge badge-orange">Load Regulation</div>
+                            <p style="font-size: 0.8em;">負載調整率測試</p>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>🔄 雙層判斷機制</h2>
+                    <div class="feature-box" style="border-color: #3498db;">
+                        <h3 class="info">第一層：標題關鍵字判斷（優先）</h3>
+                        <ul>
+                            <li><code>Iin&lt;</code> 或 <code>Iin &lt;</code> → InputOutput_Iin</li>
+                            <li><code>Pin&lt;</code> 或 <code>Pin &lt;</code> → InputOutput_Pin</li>
+                            <li><code>Eff&gt;</code> 或 <code>Eff.</code> → InputOutput_Eff</li>
+                        </ul>
+                    </div>
+                    <div class="feature-box" style="border-color: #e74c3c;">
+                        <h3 class="warning">第二層：數據內容判斷（後備）</h3>
+                        <ul>
+                            <li>Eff Min ≠ <code>*</code> → InputOutput_Eff</li>
+                            <li>Iinrms Max ≠ <code>*</code> → InputOutput_Iin</li>
+                            <li>Pin Max ≠ <code>*</code> → InputOutput_Pin</li>
+                            <li>以上都不滿足 → InputOutput_General</li>
+                        </ul>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>⚡ 判斷優先級</h2>
+                    <div style="text-align: center; margin-top: 50px;">
+                        <div style="font-size: 3em; font-weight: bold; color: #e74c3c;">Eff</div>
+                        <div style="font-size: 2em; margin: 20px 0;">▼</div>
+                        <div style="font-size: 2.5em; font-weight: bold; color: #f39c12;">Iin</div>
+                        <div style="font-size: 2em; margin: 20px 0;">▼</div>
+                        <div style="font-size: 2em; font-weight: bold; color: #3498db;">Pin</div>
+                        <div style="font-size: 2em; margin: 20px 0;">▼</div>
+                        <div style="font-size: 1.5em; font-weight: bold; color: #95a5a6;">General</div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>📝 判斷範例</h2>
+                    <div class="highlight-box">
+                        <h3>測試數據：</h3>
+                        <pre style="font-size: 0.7em; background: white; color: #2c3e50; padding: 15px; border-radius: 5px;"><code>            Max      Min    Reading
+Iinrms         *        *      0.381
+Pin            *        *      9.144
+Eff       99.000   83.000     87.281</code></pre>
+                        <h3 style="margin-top: 20px;">判斷結果：</h3>
+                        <p style="font-size: 1.5em; color: #2ecc71;">✓ InputOutput_Eff</p>
+                        <p style="font-size: 1.2em;">（因為 Eff Min = 83.000）</p>
+                    </div>
+                </section>
+            </section>
+
+            <!-- 第三章：測試類型詳細說明 -->
+            <section>
+                <section>
+                    <h2>📊 測試類型統計</h2>
+                    <table style="font-size: 0.7em;">
+                        <thead>
+                            <tr>
+                                <th>測試類型</th>
+                                <th>參數數量</th>
+                                <th>讀值數量</th>
+                                <th>色彩</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Turn On</td>
+                                <td>12</td>
+                                <td>1</td>
+                                <td style="background: #c6e0b4;">淺綠色</td>
+                            </tr>
+                            <tr>
+                                <td>Hold Up</td>
+                                <td>10</td>
+                                <td>2</td>
+                                <td style="background: #ffc7ce;">粉紅色</td>
+                            </tr>
+                            <tr>
+                                <td>Short Circuit</td>
+                                <td>8</td>
+                                <td>1</td>
+                                <td style="background: #bdd7ee;">淺藍色</td>
+                            </tr>
+                            <tr>
+                                <td>Combine</td>
+                                <td>17</td>
+                                <td>6</td>
+                                <td style="background: #e6b8af;">淡橘色</td>
+                            </tr>
+                            <tr>
+                                <td>OLP</td>
+                                <td>10</td>
+                                <td>1</td>
+                                <td style="background: #ffe4b5;">淡橙色</td>
+                            </tr>
+                            <tr>
+                                <td>Dynamic</td>
+                                <td>15</td>
+                                <td>2</td>
+                                <td style="background: #e0ffff;">淡青色</td>
+                            </tr>
+                            <tr>
+                                <td>Load Regulation</td>
+                                <td>22</td>
+                                <td>11</td>
+                                <td style="background: #bdd7ee;">淺藍色</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+
+                <section>
+                    <h2>🔌 Turn On Test（開機測試）</h2>
+                    <div class="columns">
+                        <div class="column">
+                            <h3>參數（12 個）</h3>
+                            <ul style="font-size: 0.8em;">
+                                <li>ON/OFF Phase Delay</li>
+                                <li>Vin, Fin</li>
+                                <li>Load Name, MODE</li>
+                                <li>Ifs, Vfs</li>
+                                <li>Von, I/R, Va</li>
+                                <li>Ton Max</li>
+                            </ul>
+                        </div>
+                        <div class="column">
+                            <h3>讀值（1 個）</h3>
+                            <div class="highlight-box">
+                                <p style="font-size: 1.5em; margin: 0;">Ton Read</p>
+                                <p style="font-size: 0.9em; margin-top: 10px;">實際開機時間測量值</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>⏱️ Hold Up Test（保持時間測試）</h2>
+                    <div class="columns">
+                        <div class="column">
+                            <h3>參數（10 個）</h3>
+                            <ul style="font-size: 0.8em;">
+                                <li>Vin, Fin</li>
+                                <li>Load Name, MODE</li>
+                                <li>Ifs, Vfs</li>
+                                <li>Von, I/R, Va</li>
+                                <li>Thd Min</li>
+                            </ul>
+                        </div>
+                        <div class="column">
+                            <h3>讀值（2 個）</h3>
+                            <div class="feature-box">
+                                <p><span class="badge badge-blue">Tds</span></p>
+                                <p style="font-size: 0.8em;">短時間保持時間</p>
+                            </div>
+                            <div class="feature-box">
+                                <p><span class="badge badge-green">Tdl</span></p>
+                                <p style="font-size: 0.8em;">長時間保持時間</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>🔥 Combine Test（綜合負載測試）</h2>
+                    <h3>特色：3 組條件 × 2 讀值 = 6 個讀值</h3>
+                    <div class="columns">
+                        <div class="column" style="background: #bdd7ee; padding: 15px; border-radius: 10px;">
+                            <h4 style="color: #2c3e50;">Value-1（藍色）</h4>
+                            <p>Vin-1, Fac-1, I/R-1</p>
+                            <p><strong>Vdc-1 RD, Vpp-1 RD</strong></p>
+                        </div>
+                        <div class="column" style="background: #c6e0b4; padding: 15px; border-radius: 10px;">
+                            <h4 style="color: #2c3e50;">Value-2（綠色）</h4>
+                            <p>Vin-2, Fac-2, I/R-2</p>
+                            <p><strong>Vdc-2 RD, Vpp-2 RD</strong></p>
+                        </div>
+                        <div class="column" style="background: #ffe4b5; padding: 15px; border-radius: 10px;">
+                            <h4 style="color: #2c3e50;">Value-3（橙色）</h4>
+                            <p>Vin-3, Fac-3, I/R-3</p>
+                            <p><strong>Vdc-3 RD, Vpp-3 RD</strong></p>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>📈 Load Regulation Test</h2>
+                    <div class="highlight-box">
+                        <h3>最複雜的測試類型</h3>
+                        <div class="columns" style="color: white;">
+                            <div class="column">
+                                <h1 style="color: white;">22</h1>
+                                <p>參數數量</p>
+                            </div>
+                            <div class="column">
+                                <h1 style="color: white;">11</h1>
+                                <p>讀值數量</p>
+                            </div>
+                            <div class="column">
+                                <h1 style="color: white;">3</h1>
+                                <p>負載點</p>
+                            </div>
+                        </div>
+                    </div>
+                    <p style="font-size: 0.9em;">測試 3 個負載點的 Vdc、Vpp、Vn 讀值 + dV21、dV31 電壓差</p>
+                </section>
+
+                <section>
+                    <h2>⚡ Input/Output 子類型</h2>
+                    <table style="font-size: 0.65em;">
+                        <thead>
+                            <tr>
+                                <th>子類型</th>
+                                <th>識別方式</th>
+                                <th>參數</th>
+                                <th>讀值</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Iin</strong></td>
+                                <td>Iin&lt; 或 Iinrms Max ≠ *</td>
+                                <td>12</td>
+                                <td>8</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Pin</strong></td>
+                                <td>Pin&lt; 或 Pin Max ≠ *</td>
+                                <td>10</td>
+                                <td>8</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Eff</strong></td>
+                                <td>Eff&gt; 或 Eff Min ≠ *</td>
+                                <td>15</td>
+                                <td>8</td>
+                            </tr>
+                            <tr>
+                                <td><strong>General</strong></td>
+                                <td>以上都不滿足</td>
+                                <td>15</td>
+                                <td>8</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p class="info" style="font-size: 0.9em; margin-top: 20px;">* Eff 和 General 類型包含 Vin Max/Min 參數</p>
+                </section>
+
+                <section>
+                    <h2>🔄 Input/Output 讀值</h2>
+                    <div class="columns">
+                        <div class="column">
+                            <h3>共同讀值（6 個）</h3>
+                            <ul style="font-size: 0.8em;">
+                                <li>Iinrms（輸入電流）</li>
+                                <li>Pin（輸入功率）</li>
+                                <li>Pdc（DC 功率）</li>
+                                <li>Eff（效率）</li>
+                                <li>Pf（功率因數）</li>
+                                <li>Vdc Read</li>
+                            </ul>
+                        </div>
+                        <div class="column">
+                            <h3>特殊讀值（2 個）</h3>
+                            <div class="feature-box">
+                                <p><span class="badge badge-blue">Idc Read</span></p>
+                                <p style="font-size: 0.8em;">Iin/Pin/Eff 類型</p>
+                            </div>
+                            <div class="feature-box">
+                                <p><span class="badge badge-green">Vin Read</span></p>
+                                <p style="font-size: 0.8em;">General 類型</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="feature-box" style="margin-top: 20px;">
+                        <p class="info">所有讀值欄位都包含 Load Name 前綴</p>
+                        <p style="font-size: 0.9em;">例如：<code>5.3_Iinrms</code>, <code>12V_Pin</code></p>
+                    </div>
+                </section>
+            </section>
+
+            <!-- 第四章：Excel 報告結構 -->
+            <section>
+                <section>
+                    <h2>📊 Excel 報告結構</h2>
+                    <div class="highlight-box">
+                        <h3>工作表命名格式</h3>
+                        <p style="font-size: 1.5em; text-align: center;">[客戶名稱]_[測試日期]_[樣品數量]pcs</p>
+                        <p style="text-align: center; font-size: 1.2em; margin-top: 20px;">範例：<code>ABC_Company_2025-01-15_30pcs</code></p>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>🎨 色彩分組系統</h2>
+                    <table style="font-size: 0.7em;">
+                        <thead>
+                            <tr>
+                                <th>元素</th>
+                                <th>顏色</th>
+                                <th>用途</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>標題行</td>
+                                <td style="background: #bdd7ee;">淺藍色</td>
+                                <td>測試名稱</td>
+                            </tr>
+                            <tr>
+                                <td>S/N 行</td>
+                                <td style="background: #b3e5fc;">淺藍色</td>
+                                <td>序號標題</td>
+                            </tr>
+                            <tr>
+                                <td>數據行</td>
+                                <td style="background: #e1f5fe;">極淺藍</td>
+                                <td>測試讀值</td>
+                            </tr>
+                            <tr>
+                                <td>參數名稱</td>
+                                <td style="background: #ffe0b2;">淺橙色</td>
+                                <td>Condition</td>
+                            </tr>
+                            <tr>
+                                <td>參數數值</td>
+                                <td style="background: #fff9c4;">淺黃色</td>
+                                <td>Value</td>
+                            </tr>
+                            <tr>
+                                <td>Maximum</td>
+                                <td style="background: #ffc7ce;">粉紅色</td>
+                                <td>最大值</td>
+                            </tr>
+                            <tr>
+                                <td>Minimum</td>
+                                <td style="background: #c6e0b4;">淺綠色</td>
+                                <td>最小值</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+
+                <section>
+                    <h2>📐 報告布局特點</h2>
+                    <div class="feature-box">
+                        <h3>✓ 橫向排列</h3>
+                        <p>所有測試類型橫向排列，方便對照不同測試項目</p>
+                    </div>
+                    <div class="feature-box">
+                        <h3>✓ S/N 行對齊</h3>
+                        <p>所有測試的 S/N 行在同一水平位置，便於查看</p>
+                    </div>
+                    <div class="feature-box">
+                        <h3>✓ 自動計算</h3>
+                        <p>每個測試自動計算 Maximum 和 Minimum 值</p>
+                    </div>
+                    <div class="feature-box">
+                        <h3>✓ 異常標記</h3>
+                        <p>帶 <code>??</code> 的異常值以紅色粗體顯示</p>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>🎨 Combine 測試特殊色彩</h2>
+                    <div style="text-align: center;">
+                        <div style="background: #bdd7ee; padding: 20px; margin: 10px; border-radius: 10px;">
+                            <h3 style="color: #2c3e50;">Value-1（藍色組）</h3>
+                            <p>Vin-1, Fac-1, I/R-1 參數</p>
+                            <p>Vdc-1 RD, Vpp-1 RD 讀值</p>
+                        </div>
+                        <div style="background: #c6e0b4; padding: 20px; margin: 10px; border-radius: 10px;">
+                            <h3 style="color: #2c3e50;">Value-2（綠色組）</h3>
+                            <p>Vin-2, Fac-2, I/R-2 參數</p>
+                            <p>Vdc-2 RD, Vpp-2 RD 讀值</p>
+                        </div>
+                        <div style="background: #ffe4b5; padding: 20px; margin: 10px; border-radius: 10px;">
+                            <h3 style="color: #2c3e50;">Value-3（橙色組）</h3>
+                            <p>Vin-3, Fac-3, I/R-3 參數</p>
+                            <p>Vdc-3 RD, Vpp-3 RD 讀值</p>
+                        </div>
+                    </div>
+                </section>
+            </section>
+
+            <!-- 第五章：特殊標記 -->
+            <section>
+                <section>
+                    <h2>⚠️ 特殊標記說明</h2>
+                    <div class="highlight-box">
+                        <h1 style="color: white; text-align: center;">2 種特殊標記</h1>
+                        <div class="columns" style="color: white; margin-top: 30px;">
+                            <div class="column" style="text-align: center;">
+                                <h2 style="color: white;">*</h2>
+                                <p>參數未設定</p>
+                            </div>
+                            <div class="column" style="text-align: center;">
+                                <h2 style="color: white;">??</h2>
+                                <p>異常數據</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>❌ <code>*</code> 號標記</h2>
+                    <div class="feature-box">
+                        <h3>意義</h3>
+                        <p>參數未設定或不適用</p>
+                    </div>
+                    <div class="feature-box">
+                        <h3>處理方式</h3>
+                        <p class="warning">在 Excel 報告中<strong>完全不顯示</strong></p>
+                        <p>（包括參數名稱和數值）</p>
+                    </div>
+                    <div class="highlight-box">
+                        <h3>範例</h3>
+                        <table style="width: 100%; color: white;">
+                            <tr>
+                                <td>TXT 原始數據</td>
+                                <td>Excel 顯示</td>
+                            </tr>
+                            <tr>
+                                <td>Iinrms Max = *</td>
+                                <td class="warning">不顯示</td>
+                            </tr>
+                            <tr>
+                                <td>Eff Min = 83.000</td>
+                                <td class="success">Eff Min = 83.000</td>
+                            </tr>
+                        </table>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>⚡ <code>??</code> 異常值標記</h2>
+                    <div class="feature-box">
+                        <h3>意義</h3>
+                        <p>測試設備標記為可疑或異常的數據</p>
+                    </div>
+                    <div class="feature-box">
+                        <h3>顯示方式</h3>
+                        <p class="warning" style="font-size: 1.5em;">紅色粗體</p>
+                        <p>保留原始數值和 <code>??</code> 標記</p>
+                    </div>
+                    <div class="feature-box">
+                        <h3>計算方式</h3>
+                        <p>MAX/MIN 計算時<strong>移除 <code>??</code> 標記</strong>後進行數值比較</p>
+                        <p class="info">確保異常值不影響統計結果</p>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>📝 異常值處理範例</h2>
+                    <div class="highlight-box">
+                        <h3>原始數據</h3>
+                        <p style="font-size: 2em; color: white; text-align: center;">123.45??</p>
+                    </div>
+                    <div class="columns" style="margin-top: 30px;">
+                        <div class="column">
+                            <div class="feature-box" style="border-color: #e74c3c;">
+                                <h3>Excel 顯示</h3>
+                                <p style="color: #e74c3c; font-weight: bold; font-size: 1.5em;">123.45??</p>
+                                <p style="font-size: 0.9em;">（紅色粗體）</p>
+                            </div>
+                        </div>
+                        <div class="column">
+                            <div class="feature-box" style="border-color: #27ae60;">
+                                <h3>MAX/MIN 計算</h3>
+                                <p style="color: #27ae60; font-weight: bold; font-size: 1.5em;">123.45</p>
+                                <p style="font-size: 0.9em;">（移除 ?? 後使用）</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </section>
+
+            <!-- 使用建議 -->
+            <section>
+                <section>
+                    <h2>💡 使用建議</h2>
+                    <div class="columns">
+                        <div class="column">
+                            <div class="feature-box">
+                                <h3>1️⃣ 查看測試結果</h3>
+                                <ul style="font-size: 0.9em;">
+                                    <li>檢查 Maximum 和 Minimum</li>
+                                    <li>注意紅色粗體異常值</li>
+                                </ul>
+                            </div>
+                            <div class="feature-box">
+                                <h3>2️⃣ 對照測試參數</h3>
+                                <ul style="font-size: 0.9em;">
+                                    <li>確認測試條件正確</li>
+                                    <li>檢查類型識別</li>
+                                </ul>
+                            </div>
+                        </div>
+                        <div class="column">
+                            <div class="feature-box">
+                                <h3>3️⃣ 數據分析</h3>
+                                <ul style="font-size: 0.9em;">
+                                    <li>使用 Excel 篩選功能</li>
+                                    <li>利用圖表分析分布</li>
+                                </ul>
+                            </div>
+                            <div class="feature-box">
+                                <h3>4️⃣ 異常處理</h3>
+                                <ul style="font-size: 0.9em;">
+                                    <li>優先檢查 ?? 標記</li>
+                                    <li>必要時重新測試</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2>❓ 常見問題</h2>
+                    <div class="feature-box">
+                        <h3>Q: 為什麼有些參數沒有顯示？</h3>
+                        <p class="info">A: 參數值為 <code>*</code> 時表示未設定，系統會自動跳過不顯示</p>
+                    </div>
+                    <div class="feature-box">
+                        <h3>Q: 紅色粗體的數據是什麼意思？</h3>
+                        <p class="warning">A: 帶 <code>??</code> 標記的數據，表示測試設備認為該數據可疑或異常</p>
+                    </div>
+                    <div class="feature-box">
+                        <h3>Q: Input/Output 測試有幾種類型？</h3>
+                        <p class="success">A: 共 4 種子類型（Iin、Pin、Eff、General），使用雙層判斷機制自動識別</p>
+                    </div>
+                </section>
+            </section>
+
+            <!-- 結尾 -->
+            <section data-background-gradient="linear-gradient(135deg, #667eea 0%, #764ba2 100%)">
+                <h1 style="color: white;">✅ 總結</h1>
+                <div style="color: white; text-align: left; padding: 20px;">
+                    <h3 style="color: white;">✓ 9 種測試類型自動識別</h3>
+                    <h3 style="color: white;">✓ 雙層判斷機制（標題 + 數據）</h3>
+                    <h3 style="color: white;">✓ 智能參數處理（跳過 * 號）</h3>
+                    <h3 style="color: white;">✓ 異常值自動標記（?? 紅色顯示）</h3>
+                    <h3 style="color: white;">✓ 色彩分組視覺化設計</h3>
+                    <h3 style="color: white;">✓ Load Name 前綴自動添加</h3>
+                </div>
+                <p style="color: white; font-size: 1.5em; margin-top: 50px;">感謝觀看！</p>
+            </section>
+
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.5.0/reveal.min.js"></script>
+    <script>
+        Reveal.initialize({
+            hash: true,
+            slideNumber: true,
+            transition: 'slide',
+            backgroundTransition: 'fade',
+            controlsLayout: 'bottom-right',
+            width: 1280,
+            height: 720,
+            margin: 0.1,
+            minScale: 0.2,
+            maxScale: 2.0
+        });
+    </script>
+</body>
+</html>
