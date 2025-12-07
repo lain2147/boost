@@ -1,0 +1,79 @@
+' ============================================================
+' 分佈圖功能 - 超級完整獨立版
+' 創建日期：2025-12-04
+'
+' 這是一個完全獨立運行的版本，包含：
+' 1. 所有 TXT 讀取和解析功能
+' 2. 所有測試類型的參數和讀值提取功能  
+' 3. 完整的分佈圖生成功能
+' 4. 可以在空白 Excel 中直接運行
+'
+' 使用方式：
+'   執行 GenerateSEQDistributionCharts 函數
+' ============================================================
+
+Option Explicit
+
+' ========== 主控函數 ==========
+
+Sub GenerateSEQDistributionCharts()
+    Dim filePathArray As Variant
+    Dim fileContent As String
+    Dim lines() As String
+    Dim startTime As Double
+
+    startTime = Timer
+
+    filePathArray = Application.GetOpenFilename("Text Files (*.txt), *.txt", , "選擇測試報告檔案", , MultiSelect:=True)
+    If Not IsArray(filePathArray) Then Exit Sub
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.DisplayStatusBar = True
+    Application.StatusBar = "讀取檔案..."
+
+    Dim fileCount As Long
+    fileCount = UBound(filePathArray) - LBound(filePathArray) + 1
+
+    If fileCount = 1 Then
+        fileContent = ReadTextFile(CStr(filePathArray(LBound(filePathArray))))
+    Else
+        fileContent = MergeMultipleFiles(filePathArray)
+    End If
+
+    If fileContent = "" Then
+        Application.StatusBar = False
+        MsgBox "讀取檔案失敗！", vbCritical, "錯誤"
+        GoTo CleanupAndExit
+    End If
+
+    Application.StatusBar = "解析測試數據..."
+    lines = Split(fileContent, vbCrLf)
+
+    Application.StatusBar = "識別測試序列..."
+    Dim allSequences As Object
+    Set allSequences = FindAllSequences(lines)
+
+    If allSequences.Count = 0 Then
+        MsgBox "未找到測試序列！", vbWarning, "警告"
+        GoTo CleanupAndExit
+    End If
+
+    Application.StatusBar = "創建分佈圖..."
+    Call CreateDistributionChartsForAllSequences(allSequences, lines)
+
+    Dim elapsedTime As Double
+    elapsedTime = Timer - startTime
+
+    Application.StatusBar = "完成！"
+    MsgBox "✅ 分佈圖生成完成！" & vbCrLf & vbCrLf & _
+           "總耗時：" & Format(elapsedTime, "0.00") & " 秒" & vbCrLf & _
+           "共處理 " & allSequences.Count & " 個測試序列", vbInformation, "完成"
+
+CleanupAndExit:
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+End Sub

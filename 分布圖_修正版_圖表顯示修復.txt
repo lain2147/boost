@@ -1,0 +1,490 @@
+' ============================================================
+' 分佈圖圖表顯示問題修復版
+' 修正日期：2025-12-06
+' 修正項目：
+'   1. 修正混合圖表類型導致的顯示錯亂
+'   2. 改善資料範圍抓取邏輯
+'   3. 統一使用折線圖避免軸衝突
+'   4. 增強錯誤處理和調試信息
+' ============================================================
+
+' ========== 替換原本的 ConfigureDistributionChart 函數 ==========
+
+Sub ConfigureDistributionChart(ch As Chart, _
+                               ws As Worksheet, _
+                               readingName As String, _
+                               dataStartRow As Long, _
+                               dataStartCol As Long, _
+                               dataCount As Long, _
+                               specMax As Variant, _
+                               specMin As Variant)
+
+    On Error GoTo ErrorHandler
+
+    ' ===== 調試信息 =====
+    Debug.Print "========== 開始配置圖表：" & readingName & " =========="
+    Debug.Print "dataStartRow=" & dataStartRow & ", dataStartCol=" & dataStartCol
+
+    ' ===== 1. 確定資料範圍（更穩健的方法）=====
+    Dim lastRow As Long
+    lastRow = dataStartRow
+
+    ' 從 dataStartRow+1 開始往下找，直到遇到空白
+    Dim i As Long
+    For i = dataStartRow + 1 To dataStartRow + 200  ' 最多找 200 行
+        If ws.Cells(i, dataStartCol).Value = "" Then
+            lastRow = i - 1
+            Exit For
+        End If
+        lastRow = i
+    Next i
+
+    Debug.Print "找到的最後一行：" & lastRow & "，資料筆數：" & (lastRow - dataStartRow)
+
+    If lastRow <= dataStartRow Then
+        Debug.Print "警告：沒有找到資料！"
+        Exit Sub
+    End If
+
+    ' ===== 2. 定義資料範圍 =====
+    Dim valueRng As Range
+    Dim freqRng As Range
+    Dim specMinRng As Range
+    Dim specMaxRng As Range
+    Dim freqLineRng As Range
+
+    Set valueRng = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol), ws.Cells(lastRow, dataStartCol))
+    Set freqRng = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol + 1), ws.Cells(lastRow, dataStartCol + 1))
+    Set specMinRng = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol + 2), ws.Cells(lastRow, dataStartCol + 2))
+    Set specMaxRng = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol + 3), ws.Cells(lastRow, dataStartCol + 3))
+    Set freqLineRng = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol + 4), ws.Cells(lastRow, dataStartCol + 4))
+
+    Debug.Print "Value Range: " & valueRng.Address
+    Debug.Print "Freq Range: " & freqRng.Address
+
+    ' ===== 3. 清空現有 Series =====
+    Do While ch.SeriesCollection.count > 0
+        ch.SeriesCollection(1).Delete
+    Loop
+
+    ' ===== 4. 設置圖表類型為組合圖 =====
+    ' 先不設置圖表類型，讓每個 Series 自己決定
+
+    Dim s As Series
+    Dim seriesCount As Integer
+    seriesCount = 0
+
+    ' ===== 5. 添加 Series（重要：順序很關鍵）=====
+
+    ' (1) 柱狀圖：Frequency（主要資料）
+    Set s = ch.SeriesCollection.NewSeries
+    s.Name = "Frequency"
+    s.values = freqRng
+    s.XValues = valueRng
+    s.ChartType = xlColumnClustered
+    s.AxisGroup = xlPrimary
+    s.Format.Fill.ForeColor.RGB = RGB(68, 114, 196)  ' 藍色
+    seriesCount = seriesCount + 1
+    Debug.Print "已添加 Frequency（柱狀圖）"
+
+    ' (2) 折線：FreqLine（頻率趨勢線）
+    Set s = ch.SeriesCollection.NewSeries
+    s.Name = "FreqLine"
+    s.values = freqLineRng
+    s.XValues = valueRng
+    s.ChartType = xlLine
+    s.AxisGroup = xlPrimary
+    With s.Format.Line
+        .Weight = 2
+        .ForeColor.RGB = RGB(237, 125, 49)  ' 橘色
+    End With
+    s.MarkerStyle = xlMarkerStyleCircle
+    s.MarkerSize = 5
+    seriesCount = seriesCount + 1
+    Debug.Print "已添加 FreqLine（折線圖）"
+
+    ' (3) Spec Min 綠線（只在有值時添加）
+    If specMin <> "" And specMin <> "*" Then
+        ' 檢查是否有非零值
+        Dim hasMinData As Boolean
+        hasMinData = False
+        For i = dataStartRow + 1 To lastRow
+            If ws.Cells(i, dataStartCol + 2).Value > 0 Then
+                hasMinData = True
+                Exit For
+            End If
+        Next i
+
+        If hasMinData Then
+            Set s = ch.SeriesCollection.NewSeries
+            s.Name = "Spec Min = " & specMin
+            s.values = specMinRng
+            s.XValues = valueRng
+            s.ChartType = xlLine
+            s.AxisGroup = xlPrimary
+            With s.Format.Line
+                .Weight = 2.5
+                .ForeColor.RGB = RGB(0, 176, 80)  ' 綠色
+                .DashStyle = msoLineDash
+            End With
+            s.MarkerStyle = xlMarkerStyleNone
+            seriesCount = seriesCount + 1
+            Debug.Print "已添加 Spec Min 線（值=" & specMin & "）"
+        Else
+            Debug.Print "跳過 Spec Min（無資料點）"
+        End If
+    End If
+
+    ' (4) Spec Max 紅線（只在有值時添加）
+    If specMax <> "" And specMax <> "*" Then
+        ' 檢查是否有非零值
+        Dim hasMaxData As Boolean
+        hasMaxData = False
+        For i = dataStartRow + 1 To lastRow
+            If ws.Cells(i, dataStartCol + 3).Value > 0 Then
+                hasMaxData = True
+                Exit For
+            End If
+        Next i
+
+        If hasMaxData Then
+            Set s = ch.SeriesCollection.NewSeries
+            s.Name = "Spec Max = " & specMax
+            s.values = specMaxRng
+            s.XValues = valueRng
+            s.ChartType = xlLine
+            s.AxisGroup = xlPrimary
+            With s.Format.Line
+                .Weight = 2.5
+                .ForeColor.RGB = RGB(255, 0, 0)  ' 紅色
+                .DashStyle = msoLineDash
+            End With
+            s.MarkerStyle = xlMarkerStyleNone
+            seriesCount = seriesCount + 1
+            Debug.Print "已添加 Spec Max 線（值=" & specMax & "）"
+        Else
+            Debug.Print "跳過 Spec Max（無資料點）"
+        End If
+    End If
+
+    ' ===== 6. 設置圖表標題與座標軸 =====
+    ch.HasTitle = True
+    ch.chartTitle.text = readingName & " 分佈圖"
+    With ch.chartTitle.Font
+        .Size = 14
+        .Bold = True
+        .Color = RGB(68, 114, 196)
+    End With
+
+    ' X 軸（類別軸）
+    With ch.Axes(xlCategory)
+        .HasTitle = True
+        .AxisTitle.text = "測試值 (Value)"
+        .AxisTitle.Font.Size = 11
+        .TickLabelSpacing = 1
+        .TickMarkSpacing = 1
+    End With
+
+    ' Y 軸（數值軸）
+    With ch.Axes(xlValue, xlPrimary)
+        .HasTitle = True
+        .AxisTitle.text = "出現次數 (Frequency)"
+        .AxisTitle.Font.Size = 11
+        .MinimumScale = 0  ' 強制從 0 開始
+    End With
+
+    ' ===== 7. 設置圖例 =====
+    ch.HasLegend = True
+    With ch.Legend
+        .Position = xlLegendPositionBottom
+        .Font.Size = 10
+    End With
+
+    ' ===== 8. 美化圖表區域 =====
+    ch.PlotArea.Format.Fill.Visible = msoTrue
+    ch.PlotArea.Format.Fill.ForeColor.RGB = RGB(255, 255, 255)  ' 白色背景
+
+    ch.ChartArea.Format.Fill.Visible = msoTrue
+    ch.ChartArea.Format.Fill.ForeColor.RGB = RGB(242, 242, 242)  ' 淺灰色背景
+
+    Debug.Print "圖表配置完成！共添加 " & seriesCount & " 個 Series"
+    Debug.Print "=========================================="
+
+    Exit Sub
+
+ErrorHandler:
+    Debug.Print "!!! 圖表配置錯誤 !!!"
+    Debug.Print "錯誤編號：" & Err.Number
+    Debug.Print "錯誤描述：" & Err.Description
+    Debug.Print "錯誤位置：ConfigureDistributionChart"
+    MsgBox "圖表配置錯誤：" & Err.Description & vbCrLf & _
+           "讀值名稱：" & readingName & vbCrLf & _
+           "請檢查資料是否完整", vbCritical, "錯誤"
+End Sub
+
+
+' ========== 新增：診斷工具函數 ==========
+
+Sub DiagnoseChartData()
+    ' 診斷當前工作表的圖表資料
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Debug.Print "========== 圖表資料診斷 =========="
+    Debug.Print "工作表名稱：" & ws.Name
+
+    ' 檢查 A-E 欄的資料
+    Dim col As Integer
+    For col = 1 To 5
+        Debug.Print "========== 欄位 " & Split("A,B,C,D,E", ",")(col - 1) & " =========="
+
+        ' 找最後一行
+        Dim lastRow As Long
+        lastRow = ws.Cells(ws.Rows.count, col).End(xlUp).row
+        Debug.Print "最後一行：" & lastRow
+
+        ' 顯示前 20 行資料
+        Dim i As Long
+        For i = 1 To Application.WorksheetFunction.Min(20, lastRow)
+            If ws.Cells(i, col).Value <> "" Then
+                Debug.Print "Row " & i & ": " & ws.Cells(i, col).Value
+            End If
+        Next i
+    Next col
+
+    Debug.Print "=========================================="
+End Sub
+
+Sub TestSingleChart()
+    ' 測試單一圖表生成（用於調試）
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    ' 創建測試資料
+    ws.Cells.Clear
+
+    ' 標題
+    ws.Cells(1, 1).Value = "Value"
+    ws.Cells(1, 2).Value = "Frequency"
+    ws.Cells(1, 3).Value = "SpecMinBar"
+    ws.Cells(1, 4).Value = "SpecMaxBar"
+    ws.Cells(1, 5).Value = "FreqLine"
+
+    ' 測試資料
+    ws.Cells(2, 1).Value = 5.21
+    ws.Cells(2, 2).Value = 3
+    ws.Cells(2, 3).Value = 0
+    ws.Cells(2, 4).Value = 0
+    ws.Cells(2, 5).Value = 3
+
+    ws.Cells(3, 1).Value = 5.22
+    ws.Cells(3, 2).Value = 5
+    ws.Cells(3, 3).Value = 0
+    ws.Cells(3, 4).Value = 0
+    ws.Cells(3, 5).Value = 5
+
+    ws.Cells(4, 1).Value = 5.23
+    ws.Cells(4, 2).Value = 8
+    ws.Cells(4, 3).Value = 0
+    ws.Cells(4, 4).Value = 0
+    ws.Cells(4, 5).Value = 8
+
+    ws.Cells(5, 1).Value = 5.24
+    ws.Cells(5, 2).Value = 4
+    ws.Cells(5, 3).Value = 0
+    ws.Cells(5, 4).Value = 10  ' Spec Max 線
+    ws.Cells(5, 5).Value = 4
+
+    ' 創建圖表
+    Dim chartObj As ChartObject
+    Set chartObj = ws.ChartObjects.Add( _
+        Left:=ws.Cells(1, 7).Left, _
+        Top:=ws.Cells(1, 7).Top, _
+        Width:=450, _
+        Height:=280)
+
+    ' 配置圖表
+    Call ConfigureDistributionChart(chartObj.Chart, ws, "測試讀值", 1, 1, 4, "5.24", "5.20")
+
+    MsgBox "測試圖表已生成！請檢查是否正常顯示。", vbInformation
+End Sub
+
+
+' ========== 修改：WriteDistributionDataToSheet（增強版）==========
+
+Sub WriteDistributionDataToSheet(ws As Worksheet, freqData As Object, specMax As Variant, specMin As Variant, startRow As Long, startCol As Long)
+    ' ===== 調試信息 =====
+    Debug.Print "========== 寫入分佈資料 =========="
+    Debug.Print "startRow=" & startRow & ", startCol=" & startCol
+    Debug.Print "freqData 筆數：" & freqData.count
+
+    ' ===== 1. 計算最大頻率 =====
+    Dim maxFreq As Long
+    maxFreq = 0
+    Dim key As Variant
+    For Each key In freqData.Keys
+        If freqData(key) > maxFreq Then maxFreq = freqData(key)
+    Next key
+    Debug.Print "最大頻率：" & maxFreq
+
+    ' ===== 2. 檢查是否有讀值觸及 Spec =====
+    Dim hasMinViolation As Boolean, hasMaxViolation As Boolean
+    Dim minValue As Double, maxValue As Double, firstValue As Boolean
+    hasMinViolation = False
+    hasMaxViolation = False
+    firstValue = True
+
+    For Each key In freqData.Keys
+        If firstValue Then
+            minValue = CDbl(key)
+            maxValue = CDbl(key)
+            firstValue = False
+        Else
+            If CDbl(key) < minValue Then minValue = CDbl(key)
+            If CDbl(key) > maxValue Then maxValue = CDbl(key)
+        End If
+    Next key
+
+    Debug.Print "讀值範圍：" & minValue & " ~ " & maxValue
+
+    ' 判斷是否觸及 Spec
+    If specMin <> "" And specMin <> "*" Then
+        If minValue <= CDbl(specMin) Then
+            hasMinViolation = True
+            Debug.Print "觸及 Spec Min（" & specMin & "）"
+        End If
+    End If
+    If specMax <> "" And specMax <> "*" Then
+        If maxValue >= CDbl(specMax) Then
+            hasMaxViolation = True
+            Debug.Print "觸及 Spec Max（" & specMax & "）"
+        End If
+    End If
+
+    ' ===== 3. 寫入標題（粗體、背景色）=====
+    ws.Cells(startRow, startCol).Value = "Value"
+    ws.Cells(startRow, startCol + 1).Value = "Frequency"
+    ws.Cells(startRow, startCol + 2).Value = "SpecMinBar"
+    ws.Cells(startRow, startCol + 3).Value = "SpecMaxBar"
+    ws.Cells(startRow, startCol + 4).Value = "FreqLine"
+
+    With ws.Range(ws.Cells(startRow, startCol), ws.Cells(startRow, startCol + 4))
+        .Font.Bold = True
+        .Interior.Color = RGB(217, 225, 242)
+        .HorizontalAlignment = xlCenter
+    End With
+
+    ' ===== 4. 寫入資料 =====
+    Dim row As Long
+    row = startRow + 1
+    Dim dataCount As Long
+    dataCount = 0
+
+    ' 先將所有 key 排序（確保順序正確）
+    Dim sortedKeys() As Double
+    ReDim sortedKeys(1 To freqData.count)
+    Dim idx As Long
+    idx = 1
+    For Each key In freqData.Keys
+        sortedKeys(idx) = CDbl(key)
+        idx = idx + 1
+    Next key
+
+    ' 氣泡排序
+    Dim i As Long, j As Long, temp As Double
+    For i = 1 To UBound(sortedKeys) - 1
+        For j = i + 1 To UBound(sortedKeys)
+            If sortedKeys(i) > sortedKeys(j) Then
+                temp = sortedKeys(i)
+                sortedKeys(i) = sortedKeys(j)
+                sortedKeys(j) = temp
+            End If
+        Next j
+    Next i
+
+    ' 按排序後的順序寫入
+    For i = 1 To UBound(sortedKeys)
+        Dim currentValue As Double
+        currentValue = sortedKeys(i)
+
+        ws.Cells(row, startCol).Value = currentValue
+        ws.Cells(row, startCol + 1).Value = freqData(currentValue)
+
+        ' Spec Min 線（只在觸及且接近時顯示）
+        If specMin <> "" And specMin <> "*" And hasMinViolation Then
+            If Abs(currentValue - CDbl(specMin)) < 0.001 Then
+                ws.Cells(row, startCol + 2).Value = maxFreq
+                Debug.Print "在 Row " & row & " 添加 Spec Min 標記"
+            Else
+                ws.Cells(row, startCol + 2).Value = 0
+            End If
+        Else
+            ws.Cells(row, startCol + 2).Value = 0
+        End If
+
+        ' Spec Max 線（只在觸及且接近時顯示）
+        If specMax <> "" And specMax <> "*" And hasMaxViolation Then
+            If Abs(currentValue - CDbl(specMax)) < 0.001 Then
+                ws.Cells(row, startCol + 3).Value = maxFreq
+                Debug.Print "在 Row " & row & " 添加 Spec Max 標記"
+            Else
+                ws.Cells(row, startCol + 3).Value = 0
+            End If
+        Else
+            ws.Cells(row, startCol + 3).Value = 0
+        End If
+
+        ws.Cells(row, startCol + 4).Value = freqData(currentValue)
+
+        row = row + 1
+        dataCount = dataCount + 1
+    Next i
+
+    ' ===== 5. 如果 Spec 值不在讀值中，手動添加數據點 =====
+    If specMin <> "" And specMin <> "*" And hasMinViolation Then
+        Dim specMinExists As Boolean
+        specMinExists = False
+        For i = 1 To UBound(sortedKeys)
+            If Abs(sortedKeys(i) - CDbl(specMin)) < 0.001 Then
+                specMinExists = True
+                Exit For
+            End If
+        Next i
+
+        If Not specMinExists Then
+            ws.Cells(row, startCol).Value = CDbl(specMin)
+            ws.Cells(row, startCol + 1).Value = 0
+            ws.Cells(row, startCol + 2).Value = maxFreq
+            ws.Cells(row, startCol + 3).Value = 0
+            ws.Cells(row, startCol + 4).Value = 0
+            Debug.Print "手動添加 Spec Min 資料點（Row " & row & "）"
+            row = row + 1
+            dataCount = dataCount + 1
+        End If
+    End If
+
+    If specMax <> "" And specMax <> "*" And hasMaxViolation Then
+        Dim specMaxExists As Boolean
+        specMaxExists = False
+        For i = 1 To UBound(sortedKeys)
+            If Abs(sortedKeys(i) - CDbl(specMax)) < 0.001 Then
+                specMaxExists = True
+                Exit For
+            End If
+        Next i
+
+        If Not specMaxExists Then
+            ws.Cells(row, startCol).Value = CDbl(specMax)
+            ws.Cells(row, startCol + 1).Value = 0
+            ws.Cells(row, startCol + 2).Value = 0
+            ws.Cells(row, startCol + 3).Value = maxFreq
+            ws.Cells(row, startCol + 4).Value = 0
+            Debug.Print "手動添加 Spec Max 資料點（Row " & row & "）"
+            row = row + 1
+            dataCount = dataCount + 1
+        End If
+    End If
+
+    Debug.Print "共寫入 " & dataCount & " 筆資料"
+    Debug.Print "=========================================="
+End Sub

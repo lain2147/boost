@@ -1,0 +1,589 @@
+' ============================================================
+' 分佈圖功能 - 完整 VBA 代碼
+' 創建日期：2025-12-04
+' 用途：為測試報表自動生成統計分佈圖（左右布局：參數表 + 圖表）
+' ============================================================
+
+' ========== 主控函數 ==========
+
+' 模式 2：獨立模式 - 直接呼叫此函數只生成分佈圖
+Sub GenerateSEQDistributionCharts()
+    Dim filePathArray As Variant
+    Dim fileContent As String
+    Dim lines() As String
+    Dim startTime As Double
+
+    startTime = Timer
+
+    ' 選擇 TXT 檔案
+    filePathArray = Application.GetOpenFilename("Text Files (*.txt), *.txt", , "選擇測試報告檔案", , MultiSelect:=True)
+
+    If Not IsArray(filePathArray) Then Exit Sub
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.DisplayStatusBar = True
+    Application.StatusBar = "讀取檔案..."
+
+    ' 讀取檔案
+    Dim fileCount As Long
+    fileCount = UBound(filePathArray) - LBound(filePathArray) + 1
+
+    If fileCount = 1 Then
+        fileContent = ReadTextFile(CStr(filePathArray(LBound(filePathArray))))
+    Else
+        fileContent = MergeMultipleFiles(filePathArray)
+    End If
+
+    If fileContent = "" Then
+        Application.StatusBar = False
+        MsgBox "讀取檔案失敗！", vbCritical, "錯誤"
+        GoTo CleanupAndExit
+    End If
+
+    Application.StatusBar = "解析測試數據..."
+    lines = Split(fileContent, vbCrLf)
+
+    ' 找到所有測試序列
+    Application.StatusBar = "識別測試序列..."
+    Dim allSequences As Object
+    Set allSequences = FindAllSequences(lines)
+
+    If allSequences.Count = 0 Then
+        MsgBox "未找到測試序列！", vbWarning, "警告"
+        GoTo CleanupAndExit
+    End If
+
+    ' 創建分佈圖工作表
+    Application.StatusBar = "創建分佈圖..."
+    Call CreateDistributionChartsForAllSequences(allSequences, lines)
+
+    Dim elapsedTime As Double
+    elapsedTime = Timer - startTime
+
+    Application.StatusBar = "完成！"
+    MsgBox "✅ 分佈圖生成完成！" & vbCrLf & vbCrLf & _
+           "總耗時：" & Format(elapsedTime, "0.00") & " 秒" & vbCrLf & _
+           "共處理 " & allSequences.Count & " 個測試序列", vbInformation, "完成"
+
+CleanupAndExit:
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+End Sub
+
+' 主函數：為所有測試序列生成分佈圖
+Sub CreateDistributionChartsForAllSequences(allSequences As Object, lines() As String)
+    ' 創建新工作表
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ActiveWorkbook.Worksheets("分佈圖")
+    On Error GoTo 0
+
+    If ws Is Nothing Then
+        Set ws = ActiveWorkbook.Worksheets.Add(After:=ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.Count))
+        ws.Name = "分佈圖"
+    Else
+        ' 清空現有內容
+        ws.Cells.Clear
+        ws.ChartObjects.Delete
+    End If
+
+    Dim chartStartRow As Long
+    chartStartRow = 2  ' 起始行
+
+    Dim seqIndex As Variant
+    Dim seqInfo As Object
+    Dim blockHeight As Long
+
+    ' 遍歷所有序列
+    For Each seqIndex In allSequences.Keys
+        Set seqInfo = allSequences(seqIndex)
+
+        Application.StatusBar = "生成分佈圖：" & seqInfo("type") & " - " & seqInfo("loadName")
+
+        ' 根據測試類型調用對應的分佈圖生成函數
+        Select Case seqInfo("type")
+            Case "LoadRegulation"
+                blockHeight = CreateLoadRegulationDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5  ' 加上間距
+
+            ' 其他測試類型待實現
+            Case "TurnOn"
+                ' blockHeight = CreateTurnOnDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                ' chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "HoldUp"
+                ' blockHeight = CreateHoldUpDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                ' chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "Combine"
+                ' blockHeight = CreateCombineDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                ' chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "Dynamic"
+                ' blockHeight = CreateDynamicDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                ' chartStartRow = chartStartRow + blockHeight + 5
+
+        End Select
+    Next seqIndex
+
+    ' 設定工作表樣式
+    ws.Cells.Font.Name = "Calibri"
+    ws.Cells.Font.Size = 10
+    ws.Activate
+    ws.Range("A1").Select
+End Sub
+
+' ========== 測試類型專用函數 ==========
+
+' Load Regulation 測試的分佈圖（11 個圖表：Vdc1-3, Vpp1-3, Vn1-3, AvgVdc, AvgVpp）
+' 返回：使用的總行數（用於計算下一個區塊位置）
+Function CreateLoadRegulationDistributionCharts(ws As Worksheet, seqInfo As Object, _
+                                                 lines() As String, startRow As Long) As Long
+    ' 1. 提取參數（重用現有函數）
+    Dim params As Object
+    Set params = ExtractLoadRegulationParams(lines, seqInfo("startLine"), seqInfo("loadName"))
+
+    ' 2. 提取讀值（重用現有函數）
+    Dim readData As Object
+    Set readData = ExtractAllLoadRegulationReads(lines, seqInfo("title"))
+
+    If readData.Count = 0 Then
+        CreateLoadRegulationDistributionCharts = 0
+        Exit Function
+    End If
+
+    ' 3. 顯示 SEQ 區塊標題
+    Dim titleRow As Long
+    titleRow = startRow
+    ws.Cells(titleRow, 1).value = seqInfo("title") & " - 分佈圖"
+    ws.Cells(titleRow, 1).Font.Bold = True
+    ws.Cells(titleRow, 1).Font.Size = 14
+    ws.Cells(titleRow, 1).Font.Color = RGB(68, 114, 196)  ' 藍色
+
+    ' 4. 定義讀值名稱數組（11 個讀值）
+    Dim readingNames As Variant
+    readingNames = Array("VdcRead1", "VppRead1", "VnRead1", _
+                         "VdcRead2", "VppRead2", "VnRead2", _
+                         "VdcRead3", "VppRead3", "VnRead3", _
+                         "AvgVdc", "AvgVpp")
+
+    ' 5. 生成 11 個圖表（垂直堆疊）
+    Dim currentRow As Long
+    currentRow = titleRow + 2  ' 標題下方開始
+
+    Dim readingName As Variant
+    Dim specMax As Variant, specMin As Variant
+    Dim blockHeight As Long
+
+    For Each readingName In readingNames
+        ' 確定 Spec Max/Min（參數映射）
+        specMax = ""
+        specMin = ""
+
+        If InStr(CStr(readingName), "Vdc") > 0 Then
+            specMax = params("VdcMax")
+            specMin = params("VdcMin")
+        ElseIf InStr(CStr(readingName), "Vpp") > 0 Then
+            specMax = params("VppMax")
+            specMin = "*"  ' Vpp 通常沒有 Min
+        ElseIf InStr(CStr(readingName), "Vn") > 0 Then
+            specMax = ""   ' Vn 沒有 Spec
+            specMin = ""
+        End If
+
+        ' 生成單個圖表（左右布局）
+        blockHeight = CreateSingleDistributionChart(ws, CStr(readingName), readData, _
+                                                    specMax, specMin, currentRow, 1, params)
+
+        ' 更新下一個區塊位置（垂直堆疊）
+        currentRow = currentRow + blockHeight + 2  ' 每個區塊間距 2 行
+    Next readingName
+
+    ' 返回總使用行數
+    CreateLoadRegulationDistributionCharts = currentRow - startRow
+End Function
+
+' ========== 核心圖表生成函數 ==========
+
+' 為單個讀值生成分佈圖（左右布局版本）
+' 返回：使用的行數
+Function CreateSingleDistributionChart(ws As Worksheet, readingName As String, _
+                                       readData As Object, _
+                                       specMax As Variant, specMin As Variant, _
+                                       blockRow As Long, startCol As Long, _
+                                       params As Object) As Long
+    ' === 1. 收集讀值數據 ===
+    Dim readingValues As Collection
+    Set readingValues = CollectReadingValues(readData, readingName)
+
+    If readingValues.Count = 0 Then
+        CreateSingleDistributionChart = 0
+        Exit Function
+    End If
+
+    ' === 2. 左側參數表 ===
+    Dim paramCol As Long
+    paramCol = startCol
+
+    ' Condition 標題行
+    ws.Cells(blockRow, paramCol).value = "Condition"
+    ws.Cells(blockRow, paramCol).Font.Bold = True
+    ws.Cells(blockRow, paramCol).Interior.Color = RGB(255, 224, 178)  ' 淺橘色
+    ws.Cells(blockRow, paramCol).HorizontalAlignment = xlCenter
+    ws.Cells(blockRow, paramCol).ColumnWidth = 15
+
+    ' 參數內容（Max/Min）
+    Dim paramRow As Long
+    paramRow = blockRow + 1
+
+    If specMax <> "" And specMax <> "*" Then
+        ws.Cells(paramRow, paramCol).value = readingName & " Max"
+        ws.Cells(paramRow, paramCol + 1).value = specMax
+        paramRow = paramRow + 1
+    End If
+
+    If specMin <> "" And specMin <> "*" Then
+        ws.Cells(paramRow, paramCol).value = readingName & " Min"
+        ws.Cells(paramRow, paramCol + 1).value = specMin
+        paramRow = paramRow + 1
+    End If
+
+    ' Value 標題行
+    ws.Cells(paramRow, paramCol).value = "Value"
+    ws.Cells(paramRow, paramCol).Font.Bold = True
+    paramRow = paramRow + 1
+
+    ' Value 內容（顯示前 5 個數值作為示例）
+    Dim valueCount As Integer
+    valueCount = 0
+    Dim val As Variant
+    For Each val In readingValues
+        If valueCount >= 5 Then Exit For
+        ws.Cells(paramRow + valueCount, paramCol).value = val
+        valueCount = valueCount + 1
+    Next val
+
+    ' === 3. 右側分佈圖 ===
+    Dim chartCol As Long
+    chartCol = paramCol + 3  ' 參數表右側 3 欄後開始圖表
+
+    ' 數據處理：四捨五入、去重、排序
+    Dim processedData As Collection
+    Set processedData = ProcessReadingValues(readingValues)
+
+    If processedData.Count = 0 Then
+        CreateSingleDistributionChart = 10
+        Exit Function
+    End If
+
+    ' 頻率計算
+    Dim freqData As Object
+    Set freqData = CalculateFrequencyData(readingValues, processedData)
+
+    ' 建立數據表（隱藏在遠處欄位）
+    Dim dataStartRow As Long, dataStartCol As Long
+    dataStartRow = blockRow
+    dataStartCol = startCol + 20  ' 遠離顯示區域
+
+    Call WriteDistributionDataToSheet(ws, freqData, specMax, specMin, dataStartRow, dataStartCol)
+
+    ' 創建圖表（右側位置）
+    Dim chartObj As ChartObject
+    Set chartObj = ws.ChartObjects.Add(Left:=ws.Cells(blockRow, chartCol).Left, _
+                                       Top:=ws.Cells(blockRow, chartCol).Top, _
+                                       Width:=500, Height:=280)
+
+    ' 設定圖表數據來源和樣式
+    Call ConfigureDistributionChart(chartObj.Chart, ws, readingName, _
+                                    dataStartRow, dataStartCol, freqData.Count, _
+                                    specMax, specMin)
+
+    ' 返回使用的行數（取圖表高度和參數表高度的最大值）
+    Dim chartRowHeight As Long
+    chartRowHeight = 18  ' 圖表約佔 18 行
+    Dim paramRowHeight As Long
+    paramRowHeight = paramRow - blockRow + 5
+
+    If chartRowHeight > paramRowHeight Then
+        CreateSingleDistributionChart = chartRowHeight
+    Else
+        CreateSingleDistributionChart = paramRowHeight
+    End If
+End Function
+
+' ========== 輔助函數 ==========
+
+' 從 readData Dictionary 收集特定讀值的所有數值
+Function CollectReadingValues(readData As Object, readingName As String) As Collection
+    Dim values As New Collection
+    Dim snKey As Variant
+
+    For Each snKey In readData.Keys
+        If readData(snKey).Exists(readingName) Then
+            Dim value As Variant
+            value = readData(snKey)(readingName)
+
+            ' 清理 ?? 標記
+            If Not IsEmpty(value) And value <> "" Then
+                Dim cleanValue As String
+                cleanValue = CleanNumericValue(CStr(value))
+                If IsNumeric(cleanValue) And cleanValue <> "" Then
+                    values.Add CDbl(cleanValue)
+                End If
+            End If
+        End If
+    Next snKey
+
+    Set CollectReadingValues = values
+End Function
+
+' 處理讀值：四捨五入、去重、排序
+Function ProcessReadingValues(values As Collection) As Collection
+    Dim processed As New Collection
+    Dim uniqueDict As Object
+    Set uniqueDict = CreateObject("Scripting.Dictionary")
+
+    ' 四捨五入並去重
+    Dim value As Variant
+    For Each value In values
+        Dim rounded As Double
+        rounded = RoundByValueRange(CDbl(value))
+
+        If Not uniqueDict.Exists(rounded) Then
+            uniqueDict.Add rounded, True
+            processed.Add rounded
+        End If
+    Next value
+
+    ' 排序（轉換為數組後排序）
+    Set ProcessReadingValues = SortCollection(processed)
+End Function
+
+' 四捨五入規則函數
+Function RoundByValueRange(value As Double) As Double
+    Dim absValue As Double
+    absValue = Abs(value)
+
+    If absValue >= 1 Then
+        ' 絕對值 >= 1：四捨五入到小數第 2 位
+        RoundByValueRange = Round(value, 2)
+    Else
+        ' 0 到 1 之間：檢查小數位數
+        Dim valueStr As String
+        valueStr = CStr(value)
+
+        If InStr(valueStr, ".") = 0 Then
+            RoundByValueRange = value
+            Exit Function
+        End If
+
+        Dim decimalPart As String
+        decimalPart = Split(valueStr, ".")(1)
+
+        If Len(decimalPart) <= 3 Then
+            ' 只到第 3 位，不動
+            RoundByValueRange = value
+        Else
+            ' 超過第 3 位，四捨五入到第 3 位
+            RoundByValueRange = Round(value, 3)
+        End If
+    End If
+End Function
+
+' 排序 Collection（氣泡排序）
+Function SortCollection(coll As Collection) As Collection
+    Dim sorted As New Collection
+    Dim arr() As Double
+    Dim i As Long, j As Long
+    Dim temp As Double
+
+    ' 轉換為數組
+    ReDim arr(1 To coll.Count)
+    For i = 1 To coll.Count
+        arr(i) = coll(i)
+    Next i
+
+    ' 氣泡排序
+    For i = 1 To UBound(arr) - 1
+        For j = i + 1 To UBound(arr)
+            If arr(i) > arr(j) Then
+                temp = arr(i)
+                arr(i) = arr(j)
+                arr(j) = temp
+            End If
+        Next j
+    Next i
+
+    ' 轉回 Collection
+    For i = 1 To UBound(arr)
+        sorted.Add arr(i)
+    Next i
+
+    Set SortCollection = sorted
+End Function
+
+' 計算頻率數據
+Function CalculateFrequencyData(originalValues As Collection, uniqueValues As Collection) As Object
+    Dim freqDict As Object
+    Set freqDict = CreateObject("Scripting.Dictionary")
+
+    Dim uniqueVal As Variant
+    Dim origVal As Variant
+    Dim count As Long
+
+    ' 對每個唯一值計算頻率
+    For Each uniqueVal In uniqueValues
+        count = 0
+        For Each origVal In originalValues
+            Dim roundedOrigVal As Double
+            roundedOrigVal = RoundByValueRange(CDbl(origVal))
+            If Abs(roundedOrigVal - CDbl(uniqueVal)) < 0.0001 Then
+                count = count + 1
+            End If
+        Next origVal
+        freqDict.Add uniqueVal, count
+    Next uniqueVal
+
+    Set CalculateFrequencyData = freqDict
+End Function
+
+' 將分佈數據寫入工作表
+Sub WriteDistributionDataToSheet(ws As Worksheet, freqData As Object, _
+                                  specMax As Variant, specMin As Variant, _
+                                  startRow As Long, startCol As Long)
+    ' 找到最大頻率值（用於 Spec 線高度）
+    Dim maxFreq As Long
+    maxFreq = 0
+    Dim key As Variant
+    For Each key In freqData.Keys
+        If freqData(key) > maxFreq Then maxFreq = freqData(key)
+    Next key
+
+    ' 寫入標題行
+    ws.Cells(startRow, startCol).value = "Value"
+    ws.Cells(startRow, startCol + 1).value = "Frequency"
+    ws.Cells(startRow, startCol + 2).value = "SpecMinBar"
+    ws.Cells(startRow, startCol + 3).value = "SpecMaxBar"
+    ws.Cells(startRow, startCol + 4).value = "FreqLine"
+
+    ' 寫入數據行
+    Dim row As Long
+    row = startRow + 1
+
+    For Each key In freqData.Keys
+        ws.Cells(row, startCol).value = CDbl(key)
+        ws.Cells(row, startCol + 1).value = freqData(key)
+
+        ' Spec Min Bar（只在對應 Value 位置顯示）
+        If specMin <> "" And specMin <> "*" Then
+            If Abs(CDbl(key) - CDbl(specMin)) < 0.01 Then
+                ws.Cells(row, startCol + 2).value = maxFreq
+            End If
+        End If
+
+        ' Spec Max Bar（只在對應 Value 位置顯示）
+        If specMax <> "" And specMax <> "*" Then
+            If Abs(CDbl(key) - CDbl(specMax)) < 0.01 Then
+                ws.Cells(row, startCol + 3).value = maxFreq
+            End If
+        End If
+
+        ' Freq Line（所有位置都有）
+        ws.Cells(row, startCol + 4).value = freqData(key)
+
+        row = row + 1
+    Next key
+End Sub
+
+' 設定圖表樣式和系列
+Sub ConfigureDistributionChart(chart As chart, ws As Worksheet, readingName As String, _
+                               dataStartRow As Long, dataStartCol As Long, dataCount As Long, _
+                               specMax As Variant, specMin As Variant)
+    On Error Resume Next
+
+    ' 清除現有系列
+    Do While chart.SeriesCollection.Count > 0
+        chart.SeriesCollection(1).Delete
+    Loop
+
+    ' 定義數據範圍
+    Dim valueRange As String, freqRange As String, specMinRange As String, specMaxRange As String, freqLineRange As String
+
+    valueRange = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol), ws.Cells(dataStartRow + dataCount, dataStartCol)).Address
+    freqRange = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol + 1), ws.Cells(dataStartRow + dataCount, dataStartCol + 1)).Address
+    specMinRange = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol + 2), ws.Cells(dataStartRow + dataCount, dataStartCol + 2)).Address
+    specMaxRange = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol + 3), ws.Cells(dataStartRow + dataCount, dataStartCol + 3)).Address
+    freqLineRange = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol + 4), ws.Cells(dataStartRow + dataCount, dataStartCol + 4)).Address
+
+    ' 1. Frequency（藍色柱狀圖）
+    Dim series1 As Series
+    Set series1 = chart.SeriesCollection.NewSeries
+    series1.Name = "Frequency"
+    series1.ChartType = xlColumnClustered
+    series1.Values = "=" & ws.Name & "!" & freqRange
+    series1.XValues = "=" & ws.Name & "!" & valueRange
+    series1.Format.Fill.ForeColor.RGB = RGB(68, 114, 196)  ' 藍色
+
+    ' 2. Freq Line（黃/橘色折線）
+    Dim series2 As Series
+    Set series2 = chart.SeriesCollection.NewSeries
+    series2.Name = "Freq Line"
+    series2.ChartType = xlLineMarkers
+    series2.Values = "=" & ws.Name & "!" & freqLineRange
+    series2.XValues = "=" & ws.Name & "!" & valueRange
+    series2.Format.Line.ForeColor.RGB = RGB(255, 192, 0)  ' 橘黃色
+    series2.Format.Line.Weight = 2.5
+    series2.MarkerStyle = xlMarkerStyleCircle
+    series2.MarkerSize = 6
+    series2.MarkerForegroundColor = RGB(255, 192, 0)
+
+    ' 3. Spec Min Bar（綠色虛線柱）- 如果有設定
+    If specMin <> "" And specMin <> "*" Then
+        Dim series3 As Series
+        Set series3 = chart.SeriesCollection.NewSeries
+        series3.Name = "Spec Min"
+        series3.ChartType = xlColumnClustered
+        series3.Values = "=" & ws.Name & "!" & specMinRange
+        series3.XValues = "=" & ws.Name & "!" & valueRange
+        series3.Format.Line.ForeColor.RGB = RGB(0, 176, 80)  ' 綠色
+        series3.Format.Line.Weight = 2
+        series3.Format.Line.DashStyle = msoLineDash  ' 虛線
+        series3.Format.Fill.Transparency = 1  ' 透明填充
+    End If
+
+    ' 4. Spec Max Bar（紅色虛線柱）- 如果有設定
+    If specMax <> "" And specMax <> "*" Then
+        Dim series4 As Series
+        Set series4 = chart.SeriesCollection.NewSeries
+        series4.Name = "Spec Max"
+        series4.ChartType = xlColumnClustered
+        series4.Values = "=" & ws.Name & "!" & specMaxRange
+        series4.XValues = "=" & ws.Name & "!" & valueRange
+        series4.Format.Line.ForeColor.RGB = RGB(255, 0, 0)  ' 紅色
+        series4.Format.Line.Weight = 2
+        series4.Format.Line.DashStyle = msoLineDash  ' 虛線
+        series4.Format.Fill.Transparency = 1  ' 透明填充
+    End If
+
+    ' 設定圖表標題和樣式
+    chart.HasTitle = True
+    chart.ChartTitle.Text = readingName & " 分佈圖"
+    chart.ChartTitle.Font.Size = 12
+    chart.ChartTitle.Font.Bold = True
+
+    ' 設定軸標籤
+    chart.Axes(xlCategory).HasTitle = True
+    chart.Axes(xlCategory).AxisTitle.Text = "Value"
+    chart.Axes(xlValue).HasTitle = True
+    chart.Axes(xlValue).AxisTitle.Text = "Frequency"
+
+    ' 設定圖表樣式
+    chart.ChartStyle = 201  ' 簡潔樣式
+    chart.Legend.Position = xlLegendPositionBottom
+
+    On Error GoTo 0
+End Sub

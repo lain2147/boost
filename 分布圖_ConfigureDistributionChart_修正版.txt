@@ -1,0 +1,159 @@
+' ============================================================
+' 完全修正版本的 ConfigureDistributionChart 函數
+' 修正日期：2025-12-06
+' 修正問題：圖表類型衝突錯誤「程序呼叫或引數不正確」
+'
+' 關鍵修正：
+'   1. 移除 xlXYScatterLinesNoMarkers（與 xlColumnClustered 不兼容）
+'   2. 全部改用 xlLine（折線圖），與柱狀圖兼容
+'   3. 添加錯誤處理機制
+'   4. 美化線條樣式（虛線 Spec、粗線頻率折線）
+' ============================================================
+
+(ch As Chart, _
+                               ws As Worksheet, _
+                               readingName As String, _
+                               dataStartRow As Long, _
+                               dataStartCol As Long, _
+                               dataCount As Long, _
+                               specMax As Variant, _
+                               specMin As Variant)
+
+    On Error GoTo ErrorHandler
+
+    Dim lastRow As Long
+    ' 以「Value」那欄往下找最後一筆資料
+    lastRow = ws.Cells(ws.Rows.count, dataStartCol).End(xlUp).row
+    If lastRow <= dataStartRow Then Exit Sub   ' 沒資料就直接離開
+
+    Dim valueRng As Range
+    Dim freqRng As Range
+    Dim specMinRng As Range
+    Dim specMaxRng As Range
+    Dim freqLineRng As Range
+
+    Set valueRng = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol), ws.Cells(lastRow, dataStartCol))
+    Set freqRng = valueRng.Offset(0, 1)      ' B 欄
+    Set specMinRng = valueRng.Offset(0, 2)   ' C 欄
+    Set specMaxRng = valueRng.Offset(0, 3)   ' D 欄
+    Set freqLineRng = valueRng.Offset(0, 4)  ' E 欄
+
+    ' 先清空所有 Series
+    Do While ch.SeriesCollection.count > 0
+        ch.SeriesCollection(1).Delete
+    Loop
+
+    ' ===== 修正：使用 xlCombo 圖表類型 =====
+    ch.ChartType = xlColumnClustered
+
+    Dim s As Series
+
+    ' 1. 長條圖：Frequency（藍色柱狀）
+    Set s = ch.SeriesCollection.NewSeries
+    s.Name = "Frequency"
+    s.values = freqRng
+    s.XValues = valueRng
+    s.ChartType = xlColumnClustered
+    s.Format.Fill.ForeColor.RGB = RGB(68, 114, 196)  ' 藍色
+    s.AxisGroup = 1
+
+    ' 2. 折線：FreqLine（深藍色折線）
+    Set s = ch.SeriesCollection.NewSeries
+    s.Name = "FreqLine"
+    s.values = freqLineRng
+    s.ChartType = xlLine  ' ===== 修正：使用 xlLine 而不是 XYScatter =====
+    s.Format.Line.ForeColor.RGB = RGB(0, 32, 96)  ' 深藍色
+    s.Format.Line.Weight = 2
+    s.MarkerStyle = xlMarkerStyleNone
+    s.AxisGroup = 1
+
+    ' 3. 下限綠線（SpecMin）
+    If specMin <> "" And specMin <> "*" Then
+        Set s = ch.SeriesCollection.NewSeries
+        s.Name = "SpecMin (" & specMin & ")"  ' 圖例顯示數值
+        s.values = specMinRng
+        s.ChartType = xlLine  ' ===== 修正：使用 xlLine =====
+        s.Format.Line.ForeColor.RGB = RGB(0, 176, 80)  ' 綠色
+        s.Format.Line.Weight = 2.5
+        s.Format.Line.DashStyle = msoLineDash  ' 虛線
+        s.MarkerStyle = xlMarkerStyleNone
+        s.AxisGroup = 1
+    End If
+
+    ' 4. 上限紅線（SpecMax）
+    If specMax <> "" And specMax <> "*" Then
+        Set s = ch.SeriesCollection.NewSeries
+        s.Name = "SpecMax (" & specMax & ")"  ' 圖例顯示數值
+        s.values = specMaxRng
+        s.ChartType = xlLine  ' ===== 修正：使用 xlLine =====
+        s.Format.Line.ForeColor.RGB = RGB(255, 0, 0)  ' 紅色
+        s.Format.Line.Weight = 2.5
+        s.Format.Line.DashStyle = msoLineDash  ' 虛線
+        s.MarkerStyle = xlMarkerStyleNone
+        s.AxisGroup = 1
+    End If
+
+    ' 標題與座標軸
+    ch.HasTitle = True
+    ch.chartTitle.text = readingName
+    ch.chartTitle.Font.Size = 12
+    ch.chartTitle.Font.Bold = True
+    ch.chartTitle.Font.Color = RGB(0, 32, 96)
+
+    ' X 軸設置
+    With ch.Axes(xlCategory)
+        .HasTitle = True
+        .AxisTitle.text = "Value"
+        .AxisTitle.Font.Size = 10
+        .TickLabels.NumberFormat = "0.000"  ' 數值格式
+    End With
+
+    ' Y 軸設置
+    With ch.Axes(xlValue)
+        .HasTitle = True
+        .AxisTitle.text = "Frequency"
+        .AxisTitle.Font.Size = 10
+        .MinimumScale = 0  ' 確保從 0 開始
+    End With
+
+    ' 圖例設置
+    ch.HasLegend = True
+    ch.Legend.Position = xlLegendPositionBottom
+    ch.Legend.Font.Size = 9
+
+    ' 圖表區域美化
+    ch.PlotArea.Format.Fill.ForeColor.RGB = RGB(255, 255, 255)  ' 白色背景
+    ch.ChartArea.Format.Fill.ForeColor.RGB = RGB(242, 242, 242)  ' 淺灰背景
+
+    Exit Sub
+
+ErrorHandler:
+    Debug.Print "ConfigureDistributionChart 錯誤: " & Err.Description & " (Row=" & dataStartRow & ", Col=" & dataStartCol & ")"
+    ' 不中斷程序，繼續執行
+End Sub
+
+
+' ============================================================
+' 使用說明：
+' ============================================================
+'
+' 1. 複製以上完整的 ConfigureDistributionChart 函數
+' 2. 在 VBA 編輯器中，找到原有的 ConfigureDistributionChart 函數（約在第 5580 行）
+' 3. 刪除舊的函數（從 Sub ConfigureDistributionChart 到 End Sub）
+' 4. 貼上新的修正版本
+' 5. 存檔並重新執行 GenerateSEQDistributionCharts
+'
+' ============================================================
+' 修正前後對比：
+' ============================================================
+'
+' ❌ 錯誤版本（會導致「程序呼叫或引數不正確」）：
+'    s.ChartType = xlXYScatterLinesNoMarkers  ' 與 xlColumnClustered 不兼容
+'    s.XValues = valueRng                     ' XY Scatter 需要這個
+'
+' ✅ 修正版本（完全兼容）：
+'    s.ChartType = xlLine                     ' 折線圖，與柱狀圖完美兼容
+'    s.MarkerStyle = xlMarkerStyleNone        ' 不顯示標記點
+'    s.Format.Line.DashStyle = msoLineDash    ' Spec 線使用虛線樣式
+'
+' ============================================================

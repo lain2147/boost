@@ -1,0 +1,186 @@
+' ============================================================
+' 分佈圖功能 - Spec 線條智能顯示版
+' 修正日期：2025-12-04
+' 修正內容：
+'   ✅ Spec Min：只有當有讀值 ≤ Min 時才顯示綠線
+'   ✅ Spec Max：只有當有讀值 ≥ Max 時才顯示紅線
+'   ✅ 圖例永遠顯示 Spec 值（即使沒有線條）
+'   ✅ 圖表名稱 = 讀值名稱
+' ============================================================
+
+' ========== 只需修改的核心函數 ==========
+
+' 修正後的數據寫入函數
+Sub WriteDistributionDataToSheet(ws As Worksheet, freqData As Object, _
+                                  specMax As Variant, specMin As Variant, _
+                                  startRow As Long, startCol As Long)
+    Dim maxFreq As Long
+    maxFreq = 0
+    Dim key As Variant
+    For Each key In freqData.Keys
+        If freqData(key) > maxFreq Then maxFreq = freqData(key)
+    Next key
+
+    ' === 新增：檢查是否有讀值觸及 Spec ===
+    Dim hasMinViolation As Boolean
+    Dim hasMaxViolation As Boolean
+    hasMinViolation = False
+    hasMaxViolation = False
+
+    ' 找出最小和最大讀值
+    Dim minValue As Double, maxValue As Double
+    Dim firstValue As Boolean
+    firstValue = True
+
+    For Each key In freqData.Keys
+        If firstValue Then
+            minValue = CDbl(key)
+            maxValue = CDbl(key)
+            firstValue = False
+        Else
+            If CDbl(key) < minValue Then minValue = CDbl(key)
+            If CDbl(key) > maxValue Then maxValue = CDbl(key)
+        End If
+    Next key
+
+    ' 判斷是否觸及 Spec
+    If specMin <> "" And specMin <> "*" Then
+        If minValue <= CDbl(specMin) Then hasMinViolation = True
+    End If
+
+    If specMax <> "" And specMax <> "*" Then
+        If maxValue >= CDbl(specMax) Then hasMaxViolation = True
+    End If
+
+    ' 寫入標題行
+    ws.Cells(startRow, startCol).Value = "Value"
+    ws.Cells(startRow, startCol + 1).Value = "Frequency"
+    ws.Cells(startRow, startCol + 2).Value = "SpecMinBar"
+    ws.Cells(startRow, startCol + 3).Value = "SpecMaxBar"
+    ws.Cells(startRow, startCol + 4).Value = "FreqLine"
+
+    ' 寫入數據行
+    Dim row As Long
+    row = startRow + 1
+
+    For Each key In freqData.Keys
+        ws.Cells(row, startCol).Value = CDbl(key)
+        ws.Cells(row, startCol + 1).Value = freqData(key)
+
+        ' === 修正：只有當觸及 Spec 時才顯示線條 ===
+        ' Spec Min Bar（綠線）
+        If specMin <> "" And specMin <> "*" Then
+            If hasMinViolation Then
+                ' 有讀值 <= Min，在 Min 位置顯示綠線
+                If Abs(CDbl(key) - CDbl(specMin)) < 0.01 Then
+                    ws.Cells(row, startCol + 2).Value = maxFreq
+                End If
+            End If
+        End If
+
+        ' Spec Max Bar（紅線）
+        If specMax <> "" And specMax <> "*" Then
+            If hasMaxViolation Then
+                ' 有讀值 >= Max，在 Max 位置顯示紅線
+                If Abs(CDbl(key) - CDbl(specMax)) < 0.01 Then
+                    ws.Cells(row, startCol + 3).Value = maxFreq
+                End If
+            End If
+        End If
+
+        ' Freq Line（所有位置都有）
+        ws.Cells(row, startCol + 4).Value = freqData(key)
+
+        row = row + 1
+    Next key
+
+    ' === 新增：如果 Spec 值不在讀值範圍內，手動添加該數據點 ===
+    ' 這樣即使 Spec 值不在讀值中，也能顯示線條
+
+    ' 處理 Spec Min
+    If specMin <> "" And specMin <> "*" And hasMinViolation Then
+        Dim specMinExists As Boolean
+        specMinExists = False
+        For Each key In freqData.Keys
+            If Abs(CDbl(key) - CDbl(specMin)) < 0.01 Then
+                specMinExists = True
+                Exit For
+            End If
+        Next key
+
+        If Not specMinExists Then
+            ' Spec Min 不在讀值中，手動添加
+            ws.Cells(row, startCol).Value = CDbl(specMin)
+            ws.Cells(row, startCol + 1).Value = 0  ' 頻率為 0
+            ws.Cells(row, startCol + 2).Value = maxFreq  ' 綠線
+            ws.Cells(row, startCol + 3).Value = 0
+            ws.Cells(row, startCol + 4).Value = 0
+            row = row + 1
+        End If
+    End If
+
+    ' 處理 Spec Max
+    If specMax <> "" And specMax <> "*" And hasMaxViolation Then
+        Dim specMaxExists As Boolean
+        specMaxExists = False
+        For Each key In freqData.Keys
+            If Abs(CDbl(key) - CDbl(specMax)) < 0.01 Then
+                specMaxExists = True
+                Exit For
+            End If
+        Next key
+
+        If Not specMaxExists Then
+            ' Spec Max 不在讀值中，手動添加
+            ws.Cells(row, startCol).Value = CDbl(specMax)
+            ws.Cells(row, startCol + 1).Value = 0  ' 頻率為 0
+            ws.Cells(row, startCol + 2).Value = 0
+            ws.Cells(row, startCol + 3).Value = maxFreq  ' 紅線
+            ws.Cells(row, startCol + 4).Value = 0
+            row = row + 1
+        End If
+    End If
+End Sub
+
+' ========== 完整版本（整合到之前的程式碼）==========
+
+' 將以上 WriteDistributionDataToSheet 函數替換到
+' "分布圖功能_最終完整版.txt" 中即可
+
+' ============================================================
+' 使用說明
+' ============================================================
+'
+' 1. 打開 "分布圖功能_最終完整版.txt"
+' 2. 找到 Sub WriteDistributionDataToSheet(...) 函數
+' 3. 用本檔案的 WriteDistributionDataToSheet 完全替換
+' 4. 保存並測試
+'
+' ============================================================
+' Spec 線條顯示邏輯說明
+' ============================================================
+'
+' 範例 1：
+'   Spec Min = 5.2
+'   讀值範圍：5.2, 5.21, 5.22, 5.23, 5.24
+'   最小讀值 = 5.2 (≤ 5.2)
+'   結果：✅ 顯示綠線在 5.2 位置
+'
+' 範例 2：
+'   Spec Max = 5.5
+'   讀值範圍：5.2, 5.21, 5.22, 5.23, 5.24
+'   最大讀值 = 5.24 (< 5.5，沒超過)
+'   結果：❌ 不顯示紅線，但圖例顯示 "Spec Max 5.5"
+'
+' 範例 3：
+'   Spec Max = 5.5
+'   讀值範圍：5.2, 5.3, 5.5, 5.6
+'   最大讀值 = 5.6 (≥ 5.5，超過了)
+'   結果：✅ 顯示紅線在 5.5 位置
+'
+' 範例 4：
+'   Spec Min = 5.0
+'   讀值範圍：5.2, 5.3, 5.4（最小 5.2 > 5.0，沒觸及）
+'   結果：❌ 不顯示綠線，但圖例顯示 "Spec Min 5.0"
+'
+' ============================================================

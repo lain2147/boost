@@ -1,0 +1,268 @@
+' ============================================================
+' 分佈圖功能整合說明
+' ============================================================
+
+' ========== 整合步驟 ==========
+
+' 步驟 1：將 "分布圖功能_VBA代碼.txt" 中的所有代碼複製到 VBA 編輯器
+' - 開啟 EXCEL_TO_TXT.xlsm
+' - 按 Alt + F11 打開 VBA 編輯器
+' - 在現有模組中貼上所有代碼（或創建新模組）
+
+' 步驟 2：整合模式 - 修改主函數 ImportTurnOnTestReport
+' 在主函數的最後（儲存檔案之前），加入分佈圖生成調用
+
+' ========== 修改 ImportTurnOnTestReport 函數 ==========
+
+' 找到原始主函數的這一段（約在第 78-88 行）：
+
+'    ' Status: Finding test sequences
+'    Application.StatusBar = "Finding test sequences..."
+'    Dim seqList As Object
+'    Set seqList = FindAllSequences(lines)
+'    Debug.Print "Found " & seqList.Count & " test sequence(s)"
+'
+'    ' Status: Creating Excel sections
+'    Application.StatusBar = "Creating Excel sections..."
+'    If seqList.Count > 0 Then
+'        CreateAllSectionsInSheet ws, seqList, lines, unitCount
+'    End If
+
+' 在 CreateAllSectionsInSheet 之後，【新增】以下代碼：
+
+'    ' ========== 【新增】生成分佈圖 ==========
+'    If seqList.Count > 0 Then
+'        Application.StatusBar = "生成分佈圖..."
+'        On Error Resume Next  ' 忽略分佈圖生成錯誤，不影響主流程
+'        Call CreateDistributionChartsForAllSequences(seqList, lines)
+'        On Error GoTo ErrorHandler  ' 恢復錯誤處理
+'    End If
+'    ' ==========================================
+
+' ========== 完整的修改範例 ==========
+
+Sub ImportTurnOnTestReport()
+    Dim filePathArray As Variant
+    Dim fileContent As String
+    Dim lines() As String
+    Dim i As Long
+    Dim startTime As Double
+
+    startTime = Timer
+
+    filePathArray = Application.GetOpenFilename("Text Files (*.txt), *.txt", , "Select Test Report File(s) - Multiple selection enabled", , MultiSelect:=True)
+    If Not IsArray(filePathArray) Then Exit Sub
+
+    Dim fileCount As Long
+    fileCount = UBound(filePathArray) - LBound(filePathArray) + 1
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.DisplayStatusBar = True
+
+    On Error GoTo ErrorHandler
+
+    Application.StatusBar = "Reading " & fileCount & " file(s)..."
+
+    If fileCount = 1 Then
+        fileContent = ReadTextFile(CStr(filePathArray(LBound(filePathArray))))
+    Else
+        fileContent = MergeMultipleFiles(filePathArray)
+    End If
+
+    If fileContent = "" Then
+        Application.StatusBar = False
+        MsgBox "Failed to read file(s)!", vbCritical, "Error"
+        GoTo CleanupAndExit
+    End If
+
+    Application.StatusBar = "Parsing test data..."
+    lines = Split(fileContent, vbCrLf)
+
+    Dim modelName As String
+    Dim customerName As String
+    Dim inspectorName As String
+    Dim testDate As String
+    Dim unitCount As Long
+
+    ExtractHeaderInfo lines, modelName, customerName, inspectorName, testDate, unitCount
+
+    Application.StatusBar = "Creating new workbook..."
+    Dim newWb As Workbook
+    Set newWb = Workbooks.Add
+
+    Application.DisplayAlerts = False
+    Do While newWb.Sheets.Count > 1
+        newWb.Sheets(newWb.Sheets.Count).Delete
+    Loop
+    Application.DisplayAlerts = True
+
+    Dim ws As Worksheet
+    Set ws = newWb.Sheets(1)
+
+    Application.StatusBar = "Finding test sequences..."
+    Dim seqList As Object
+    Set seqList = FindAllSequences(lines)
+    Debug.Print "Found " & seqList.Count & " test sequence(s)"
+
+    Application.StatusBar = "Creating Excel sections..."
+    If seqList.Count > 0 Then
+        CreateAllSectionsInSheet ws, seqList, lines, unitCount
+    End If
+
+    ' ========== 【新增】生成分佈圖（整合模式）==========
+    If seqList.Count > 0 Then
+        Application.StatusBar = "生成分佈圖..."
+        On Error Resume Next  ' 忽略分佈圖錯誤，不影響主流程
+        Call CreateDistributionChartsForAllSequences(seqList, lines)
+        If Err.Number <> 0 Then
+            Debug.Print "分佈圖生成警告：" & Err.Description
+            Err.Clear
+        End If
+        On Error GoTo ErrorHandler  ' 恢復錯誤處理
+    End If
+    ' =================================================
+
+    Application.StatusBar = "Formatting worksheet..."
+
+    ' ... 原有的工作表名稱設定和儲存邏輯 ...
+
+    Dim elapsedTime As Double
+    elapsedTime = Timer - startTime
+
+    Application.StatusBar = "Processing complete!"
+
+    If savedPath <> "" Then
+        MsgBox "✅ Processing Complete!" & vbCrLf & vbCrLf & _
+               "Total Time: " & Format(elapsedTime, "0.00") & " seconds" & vbCrLf & _
+               "Saved to: " & vbCrLf & savedPath, vbInformation, "Complete"
+    Else
+        MsgBox "Processing completed, but file was not saved." & vbCrLf & _
+               "Total Time: " & Format(elapsedTime, "0.00") & " seconds", vbInformation, "Complete"
+    End If
+
+CleanupAndExit:
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.DisplayStatusBar = True
+    Exit Sub
+
+ErrorHandler:
+    Application.StatusBar = False
+    MsgBox "Error occurred: " & Err.Description, vbCritical, "Error"
+    Resume CleanupAndExit
+End Sub
+
+' ========== 使用方式 ==========
+
+' 模式 1：整合模式（推薦）
+' - 執行 ImportTurnOnTestReport 巨集
+' - 自動生成 Excel 報表 → 自動生成分佈圖
+' - 結果：Excel 檔案包含兩個工作表（報表 + 分佈圖）
+
+' 模式 2：獨立模式
+' - 直接執行 GenerateSEQDistributionCharts 巨集
+' - 選擇 TXT 檔案 → 只生成分佈圖
+' - 結果：當前活頁簿新增 "分佈圖" 工作表
+
+' ========== 測試步驟 ==========
+
+' 1. 先測試獨立模式
+'    - 執行 GenerateSEQDistributionCharts
+'    - 選擇測試 TXT 檔案
+'    - 檢查 "分佈圖" 工作表是否正確生成
+
+' 2. 測試整合模式
+'    - 修改主函數（加入上述代碼）
+'    - 執行 ImportTurnOnTestReport
+'    - 檢查是否同時生成報表和分佈圖
+
+' ========== 注意事項 ==========
+
+' 1. 【重要】確保 CleanNumericValue 函數已存在
+'    - 此函數用於清除 ?? 標記
+'    - 已在原始代碼中（約第 4587 行）
+
+' 2. 【重要】確保所有參數提取函數已存在
+'    - ExtractLoadRegulationParams
+'    - ExtractAllLoadRegulationReads
+'    - ExtractTurnOnParams, ExtractAllTonReads
+'    - ExtractHoldUpParams, ExtractAllHoldUpReads
+'    - 等等...
+
+' 3. 錯誤處理
+'    - 整合模式使用 On Error Resume Next
+'    - 即使分佈圖生成失敗，主流程仍會繼續
+'    - 錯誤訊息會輸出到 Debug.Print
+
+' 4. 性能考量
+'    - 分佈圖生成會增加處理時間（約 10-20%）
+'    - 大量數據時建議關閉 ScreenUpdating
+
+' ========== 擴展其他測試類型 ==========
+
+' 如果要為其他測試類型（Turn On, Hold Up, Combine, Dynamic）生成分佈圖：
+
+' 1. 參照 CreateLoadRegulationDistributionCharts 函數
+' 2. 創建對應的函數（例如 CreateTurnOnDistributionCharts）
+' 3. 在 CreateDistributionChartsForAllSequences 的 Select Case 中新增對應邏輯
+
+' 範例：Turn On 測試（1 個讀值：Reading）
+
+Function CreateTurnOnDistributionCharts(ws As Worksheet, seqInfo As Object, _
+                                        lines() As String, startRow As Long) As Long
+    Dim params As Object
+    Set params = ExtractTurnOnParams(lines, seqInfo("startLine"), seqInfo("loadName"))
+
+    Dim readData As Object
+    Set readData = ExtractAllTonReads(lines, seqInfo("title"))
+
+    If readData.Count = 0 Then
+        CreateTurnOnDistributionCharts = 0
+        Exit Function
+    End If
+
+    ' SEQ 標題
+    ws.Cells(startRow, 1).value = seqInfo("title") & " - 分佈圖"
+    ws.Cells(startRow, 1).Font.Bold = True
+    ws.Cells(startRow, 1).Font.Size = 14
+
+    ' 讀值名稱：只有一個 "Reading"
+    Dim readingNames As Variant
+    readingNames = Array("Reading")
+
+    Dim currentRow As Long
+    currentRow = startRow + 2
+
+    Dim readingName As Variant
+    Dim blockHeight As Long
+
+    For Each readingName In readingNames
+        ' Reading 參數映射
+        Dim specMax As Variant, specMin As Variant
+        specMax = ""  ' Turn On 通常沒有 Spec
+        specMin = ""
+
+        ' 如果參數字典中有 Max/Min
+        If params.Exists("ReadingMax") Then specMax = params("ReadingMax")
+        If params.Exists("ReadingMin") Then specMin = params("ReadingMin")
+
+        blockHeight = CreateSingleDistributionChart(ws, CStr(readingName), readData, _
+                                                    specMax, specMin, currentRow, 1, params)
+
+        currentRow = currentRow + blockHeight + 2
+    Next readingName
+
+    CreateTurnOnDistributionCharts = currentRow - startRow
+End Function
+
+' 然後在 CreateDistributionChartsForAllSequences 中加入：
+
+'    Case "TurnOn"
+'        blockHeight = CreateTurnOnDistributionCharts(ws, seqInfo, lines, chartStartRow)
+'        chartStartRow = chartStartRow + blockHeight + 5
+
+' ========== 結束 ==========

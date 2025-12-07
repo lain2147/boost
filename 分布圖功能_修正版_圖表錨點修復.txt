@@ -1,0 +1,192 @@
+' ============================================================
+' 分佈圖功能 - 圖表錨點修復版（修正圖表創建錯誤）
+' 修正日期：2025-12-06
+'
+' 修正內容：
+'   ✅ 修正圖表創建錯誤「程序呼叫或引數不正確」
+'   ✅ 使用錨點方式創建圖表，避免像素位置超出範圍
+'   ✅ 圖表自動填充數據範圍
+' ============================================================
+
+' ========== 修正後的 CreateSingleDistributionChart_H 函數 ==========
+
+Function CreateSingleDistributionChart_H(ws As Worksheet, readingName As String, readData As Object, blockRow As Long, blockCol As Long, params As Object) As Long
+    Dim readingValues As Collection
+    Set readingValues = CollectReadingValues(readData, readingName)
+    If readingValues.Count = 0 Then
+        CreateSingleDistributionChart_H = 0
+        Exit Function
+    End If
+
+    Dim specMax As Variant, specMin As Variant
+    specMax = ""
+    specMin = ""
+    Call GetSpecForReading(readingName, params, specMax, specMin)
+
+    Dim processedData As Collection
+    Set processedData = ProcessReadingValues(readingValues)
+    If processedData.Count = 0 Then
+        CreateSingleDistributionChart_H = 0
+        Exit Function
+    End If
+
+    Dim freqData As Object
+    Set freqData = CalculateFrequencyData(readingValues, processedData)
+
+    ' 左側隱藏的計算數據（A-E 欄）
+    Call WriteDistributionDataToSheet(ws, freqData, specMax, specMin, blockRow, 1)
+
+    ' 左側參數表（blockCol, blockCol+1）
+    ws.Cells(blockRow, blockCol).Value = "Condition"
+    ws.Cells(blockRow, blockCol).Font.Bold = True
+    ws.Cells(blockRow, blockCol).Interior.Color = RGB(255, 224, 178)  ' 橘色
+    ws.Columns(blockCol).ColumnWidth = 18
+
+    ws.Cells(blockRow, blockCol + 1).Value = "Value"
+    ws.Cells(blockRow, blockCol + 1).Font.Bold = True
+    ws.Cells(blockRow, blockCol + 1).Interior.Color = RGB(255, 249, 196)  ' 黃色
+    ws.Columns(blockCol + 1).ColumnWidth = 12
+
+    ' 標題行美化：對齊和邊框
+    With ws.Range(ws.Cells(blockRow, blockCol), ws.Cells(blockRow, blockCol + 1))
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+
+    Dim paramRow As Long
+    paramRow = blockRow + 1
+    Dim key As Variant
+    For Each key In params.Keys
+        ws.Cells(paramRow, blockCol).Value = CStr(key)
+        ws.Cells(paramRow, blockCol + 1).Value = params(key)
+
+        ' 美化參數背景：交替顏色（斑馬紋效果）
+        If paramRow Mod 2 = 0 Then
+            ' 偶數行：淺藍色
+            ws.Cells(paramRow, blockCol).Interior.Color = RGB(232, 244, 248)
+            ws.Cells(paramRow, blockCol + 1).Interior.Color = RGB(232, 244, 248)
+        Else
+            ' 奇數行：淺米色
+            ws.Cells(paramRow, blockCol).Interior.Color = RGB(255, 249, 220)
+            ws.Cells(paramRow, blockCol + 1).Interior.Color = RGB(255, 249, 220)
+        End If
+
+        ' 設定對齊和邊框
+        With ws.Range(ws.Cells(paramRow, blockCol), ws.Cells(paramRow, blockCol + 1))
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders.LineStyle = xlContinuous
+            .Borders.Weight = xlThin
+        End With
+
+        paramRow = paramRow + 1
+    Next key
+
+    If specMax <> "" And specMax <> "*" Then
+        ws.Cells(paramRow, blockCol).Value = readingName & " Max"
+        ws.Cells(paramRow, blockCol + 1).Value = specMax
+        ws.Cells(paramRow, blockCol).Font.Color = RGB(255, 0, 0)  ' 紅色
+        ws.Cells(paramRow, blockCol).Font.Bold = True
+        ws.Cells(paramRow, blockCol + 1).Font.Color = RGB(255, 0, 0)
+        ws.Cells(paramRow, blockCol + 1).Font.Bold = True
+
+        ' Max 背景色：淺紅色
+        ws.Cells(paramRow, blockCol).Interior.Color = RGB(255, 230, 230)
+        ws.Cells(paramRow, blockCol + 1).Interior.Color = RGB(255, 230, 230)
+
+        ' 設定對齊和邊框
+        With ws.Range(ws.Cells(paramRow, blockCol), ws.Cells(paramRow, blockCol + 1))
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders.LineStyle = xlContinuous
+            .Borders.Weight = xlThin
+        End With
+
+        paramRow = paramRow + 1
+    End If
+
+    If specMin <> "" And specMin <> "*" Then
+        ws.Cells(paramRow, blockCol).Value = readingName & " Min"
+        ws.Cells(paramRow, blockCol + 1).Value = specMin
+        ws.Cells(paramRow, blockCol).Font.Color = RGB(0, 176, 80)  ' 綠色
+        ws.Cells(paramRow, blockCol).Font.Bold = True
+        ws.Cells(paramRow, blockCol + 1).Font.Color = RGB(0, 176, 80)
+        ws.Cells(paramRow, blockCol + 1).Font.Bold = True
+
+        ' Min 背景色：淺綠色
+        ws.Cells(paramRow, blockCol).Interior.Color = RGB(230, 255, 230)
+        ws.Cells(paramRow, blockCol + 1).Interior.Color = RGB(230, 255, 230)
+
+        ' 設定對齊和邊框
+        With ws.Range(ws.Cells(paramRow, blockCol), ws.Cells(paramRow, blockCol + 1))
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders.LineStyle = xlContinuous
+            .Borders.Weight = xlThin
+        End With
+
+        paramRow = paramRow + 1
+    End If
+
+    Dim paramTableHeight As Long
+    paramTableHeight = paramRow - blockRow
+
+    ' ========== 【修正】使用錨點方式創建圖表 ==========
+    ' 右側分佈圖（blockCol+2 開始，佔用 8 欄寬度）
+    Dim chartObj As ChartObject
+    On Error Resume Next
+
+    ' ===== 使用範圍錨點方式，避免像素位置超出範圍 =====
+    Dim chartTopLeftCell As Range
+    Set chartTopLeftCell = ws.Cells(blockRow, blockCol + 2)
+
+    ' 設定圖表大小（使用點數而不是像素）
+    Dim chartWidth As Double, chartHeight As Double
+    chartWidth = 450  ' 點數
+    chartHeight = 280  ' 點數
+
+    ' 使用安全的創建方式：先創建在 A1，然後移動到目標位置
+    Set chartObj = ws.ChartObjects.Add(Left:=10, Top:=10, Width:=chartWidth, Height:=chartHeight)
+
+    If Err.Number <> 0 Then
+        Debug.Print "圖表創建錯誤（初始創建）：" & Err.Description
+        Err.Clear
+        On Error GoTo 0
+        CreateSingleDistributionChart_H = paramTableHeight
+        Exit Function
+    End If
+
+    ' 移動圖表到目標位置（使用錨點）
+    chartObj.Top = chartTopLeftCell.Top
+    chartObj.Left = chartTopLeftCell.Left
+
+    If Err.Number <> 0 Then
+        Debug.Print "圖表移動錯誤：" & Err.Description & " (Row=" & blockRow & ", Col=" & blockCol & ")"
+        chartObj.Delete
+        Err.Clear
+        On Error GoTo 0
+        CreateSingleDistributionChart_H = paramTableHeight
+        Exit Function
+    End If
+    On Error GoTo 0
+
+    ' 配置圖表數據和樣式
+    Call ConfigureDistributionChart(chartObj.Chart, ws, readingName, blockRow, 1, freqData.Count, specMax, specMin)
+
+    Dim chartRowHeight As Long
+    chartRowHeight = 18
+    If chartRowHeight > paramTableHeight Then
+        CreateSingleDistributionChart_H = chartRowHeight
+    Else
+        CreateSingleDistributionChart_H = paramTableHeight
+    End If
+End Function
+
+' ============================================================
+' 使用說明：
+'   1. 複製上面的 CreateSingleDistributionChart_H 函數
+'   2. 取代原檔案中的同名函數（第 5163-5317 行）
+'   3. 重新執行 GenerateSEQDistributionCharts
+' ============================================================

@@ -1,0 +1,514 @@
+' ============================================================
+' 分佈圖功能 - 補充所有測試類型
+' 創建日期：2025-12-04
+' 用途：為所有測試類型（Turn On, Hold Up, Short Circuit, Combine, OLP, Dynamic, InputOutput）生成分佈圖
+' ============================================================
+
+' ========== 將此代碼加入到 "分布圖功能_VBA代碼.txt" 的 Select Case 區塊中 ==========
+
+' 在 CreateDistributionChartsForAllSequences 函數中，更新 Select Case：
+
+Sub CreateDistributionChartsForAllSequences(allSequences As Object, lines() As String)
+    ' 創建新工作表
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ActiveWorkbook.Worksheets("分佈圖")
+    On Error GoTo 0
+
+    If ws Is Nothing Then
+        Set ws = ActiveWorkbook.Worksheets.Add(After:=ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.Count))
+        ws.Name = "分佈圖"
+    Else
+        ws.Cells.Clear
+        ws.ChartObjects.Delete
+    End If
+
+    Dim chartStartRow As Long
+    chartStartRow = 2
+
+    Dim seqIndex As Variant
+    Dim seqInfo As Object
+    Dim blockHeight As Long
+
+    For Each seqIndex In allSequences.Keys
+        Set seqInfo = allSequences(seqIndex)
+
+        Application.StatusBar = "生成分佈圖：" & seqInfo("type") & " - " & seqInfo("loadName")
+
+        ' 【更新】根據測試類型調用對應的分佈圖生成函數
+        Select Case seqInfo("type")
+            Case "LoadRegulation"
+                blockHeight = CreateLoadRegulationDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "TurnOn"
+                blockHeight = CreateTurnOnDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "HoldUp"
+                blockHeight = CreateHoldUpDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "ShortCircuit"
+                blockHeight = CreateShortCircuitDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "Combine"
+                blockHeight = CreateCombineDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "OLP"
+                blockHeight = CreateOLPDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "Dynamic"
+                blockHeight = CreateDynamicDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "InputOutput_Iin", "InputOutput_Pin", "InputOutput_Eff", "InputOutput_General"
+                blockHeight = CreateInputOutputDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+        End Select
+    Next seqIndex
+
+    ws.Cells.Font.Name = "Calibri"
+    ws.Cells.Font.Size = 10
+    ws.Activate
+    ws.Range("A1").Select
+End Sub
+
+' ========== Turn On 測試的分佈圖（1 個圖表：Reading）==========
+
+Function CreateTurnOnDistributionCharts(ws As Worksheet, seqInfo As Object, _
+                                        lines() As String, startRow As Long) As Long
+    ' 1. 提取參數
+    Dim params As Object
+    Set params = ExtractTurnOnParams(lines, seqInfo("startLine"), seqInfo("loadName"))
+
+    ' 2. 提取讀值
+    Dim readData As Object
+    Set readData = ExtractAllTonReads(lines, seqInfo("title"))
+
+    If readData.Count = 0 Then
+        CreateTurnOnDistributionCharts = 0
+        Exit Function
+    End If
+
+    ' 3. 顯示 SEQ 標題
+    Dim titleRow As Long
+    titleRow = startRow
+    ws.Cells(titleRow, 1).value = seqInfo("title") & " - 分佈圖"
+    ws.Cells(titleRow, 1).Font.Bold = True
+    ws.Cells(titleRow, 1).Font.Size = 14
+    ws.Cells(titleRow, 1).Font.Color = RGB(68, 114, 196)
+
+    ' 4. 定義讀值（Turn On 只有 1 個：Reading）
+    Dim readingNames As Variant
+    readingNames = Array("Reading")
+
+    ' 5. 生成圖表
+    Dim currentRow As Long
+    currentRow = titleRow + 2
+
+    Dim readingName As Variant
+    Dim specMax As Variant, specMin As Variant
+    Dim blockHeight As Long
+
+    For Each readingName In readingNames
+        ' Turn On 通常沒有 Reading 的 Spec，如果有就使用
+        specMax = ""
+        specMin = ""
+        If params.Exists("ReadingMax") Then specMax = params("ReadingMax")
+        If params.Exists("ReadingMin") Then specMin = params("ReadingMin")
+
+        blockHeight = CreateSingleDistributionChart(ws, CStr(readingName), readData, _
+                                                    specMax, specMin, currentRow, 1, params)
+
+        currentRow = currentRow + blockHeight + 2
+    Next readingName
+
+    CreateTurnOnDistributionCharts = currentRow - startRow
+End Function
+
+' ========== Hold Up 測試的分佈圖（2 個圖表：Tds, Tdl）==========
+
+Function CreateHoldUpDistributionCharts(ws As Worksheet, seqInfo As Object, _
+                                        lines() As String, startRow As Long) As Long
+    ' 1. 提取參數
+    Dim params As Object
+    Set params = ExtractHoldUpParams(lines, seqInfo("startLine"), seqInfo("loadName"))
+
+    ' 2. 提取讀值
+    Dim readData As Object
+    Set readData = ExtractAllHoldUpReads(lines, seqInfo("title"))
+
+    If readData.Count = 0 Then
+        CreateHoldUpDistributionCharts = 0
+        Exit Function
+    End If
+
+    ' 3. 顯示 SEQ 標題
+    Dim titleRow As Long
+    titleRow = startRow
+    ws.Cells(titleRow, 1).value = seqInfo("title") & " - 分佈圖"
+    ws.Cells(titleRow, 1).Font.Bold = True
+    ws.Cells(titleRow, 1).Font.Size = 14
+    ws.Cells(titleRow, 1).Font.Color = RGB(68, 114, 196)
+
+    ' 4. 定義讀值（Hold Up 有 2 個：Tds, Tdl）
+    Dim readingNames As Variant
+    readingNames = Array("Tds", "Tdl")
+
+    ' 5. 生成圖表
+    Dim currentRow As Long
+    currentRow = titleRow + 2
+
+    Dim readingName As Variant
+    Dim specMax As Variant, specMin As Variant
+    Dim blockHeight As Long
+
+    For Each readingName In readingNames
+        ' 參數映射
+        specMax = ""
+        specMin = ""
+
+        If CStr(readingName) = "Tds" Then
+            If params.Exists("TdsMax") Then specMax = params("TdsMax")
+            If params.Exists("TdsMin") Then specMin = params("TdsMin")
+        ElseIf CStr(readingName) = "Tdl" Then
+            If params.Exists("TdlMax") Then specMax = params("TdlMax")
+            If params.Exists("TdlMin") Then specMin = params("TdlMin")
+        End If
+
+        blockHeight = CreateSingleDistributionChart(ws, CStr(readingName), readData, _
+                                                    specMax, specMin, currentRow, 1, params)
+
+        currentRow = currentRow + blockHeight + 2
+    Next readingName
+
+    CreateHoldUpDistributionCharts = currentRow - startRow
+End Function
+
+' ========== Short Circuit 測試的分佈圖（1 個圖表：Pin）==========
+
+Function CreateShortCircuitDistributionCharts(ws As Worksheet, seqInfo As Object, _
+                                              lines() As String, startRow As Long) As Long
+    ' 1. 提取參數
+    Dim params As Object
+    Set params = ExtractShortCircuitParams(lines, seqInfo("startLine"), seqInfo("loadName"))
+
+    ' 2. 提取讀值
+    Dim readData As Object
+    Set readData = ExtractAllPinReads(lines, seqInfo("title"))
+
+    If readData.Count = 0 Then
+        CreateShortCircuitDistributionCharts = 0
+        Exit Function
+    End If
+
+    ' 3. 顯示 SEQ 標題
+    Dim titleRow As Long
+    titleRow = startRow
+    ws.Cells(titleRow, 1).value = seqInfo("title") & " - 分佈圖"
+    ws.Cells(titleRow, 1).Font.Bold = True
+    ws.Cells(titleRow, 1).Font.Size = 14
+    ws.Cells(titleRow, 1).Font.Color = RGB(68, 114, 196)
+
+    ' 4. 定義讀值（Short Circuit 只有 1 個：Pin）
+    Dim readingNames As Variant
+    readingNames = Array("Pin")
+
+    ' 5. 生成圖表
+    Dim currentRow As Long
+    currentRow = titleRow + 2
+
+    Dim readingName As Variant
+    Dim specMax As Variant, specMin As Variant
+    Dim blockHeight As Long
+
+    For Each readingName In readingNames
+        specMax = ""
+        specMin = ""
+        If params.Exists("PinMax") Then specMax = params("PinMax")
+        If params.Exists("PinMin") Then specMin = params("PinMin")
+
+        blockHeight = CreateSingleDistributionChart(ws, CStr(readingName), readData, _
+                                                    specMax, specMin, currentRow, 1, params)
+
+        currentRow = currentRow + blockHeight + 2
+    Next readingName
+
+    CreateShortCircuitDistributionCharts = currentRow - startRow
+End Function
+
+' ========== Combine 測試的分佈圖（6 個圖表：Vdc1-3, Vpp1-3）==========
+
+Function CreateCombineDistributionCharts(ws As Worksheet, seqInfo As Object, _
+                                         lines() As String, startRow As Long) As Long
+    ' 1. 提取參數
+    Dim params As Object
+    Set params = ExtractCombineParams(lines, seqInfo("startLine"), seqInfo("loadName"))
+
+    ' 2. 提取讀值
+    Dim readData As Object
+    Set readData = ExtractAllCombineReads(lines, seqInfo("title"))
+
+    If readData.Count = 0 Then
+        CreateCombineDistributionCharts = 0
+        Exit Function
+    End If
+
+    ' 3. 顯示 SEQ 標題
+    Dim titleRow As Long
+    titleRow = startRow
+    ws.Cells(titleRow, 1).value = seqInfo("title") & " - 分佈圖"
+    ws.Cells(titleRow, 1).Font.Bold = True
+    ws.Cells(titleRow, 1).Font.Size = 14
+    ws.Cells(titleRow, 1).Font.Color = RGB(68, 114, 196)
+
+    ' 4. 定義讀值（Combine 有 6 個：Vdc1-3, Vpp1-3）
+    Dim readingNames As Variant
+    readingNames = Array("Vdc1", "Vpp1", "Vdc2", "Vpp2", "Vdc3", "Vpp3")
+
+    ' 5. 生成圖表
+    Dim currentRow As Long
+    currentRow = titleRow + 2
+
+    Dim readingName As Variant
+    Dim specMax As Variant, specMin As Variant
+    Dim blockHeight As Long
+
+    For Each readingName In readingNames
+        ' 參數映射
+        specMax = ""
+        specMin = ""
+
+        If InStr(CStr(readingName), "Vdc") > 0 Then
+            If params.Exists("VdcMax") Then specMax = params("VdcMax")
+            If params.Exists("VdcMin") Then specMin = params("VdcMin")
+        ElseIf InStr(CStr(readingName), "Vpp") > 0 Then
+            If params.Exists("VppMax") Then specMax = params("VppMax")
+            If params.Exists("VppMin") Then specMin = params("VppMin")
+        End If
+
+        blockHeight = CreateSingleDistributionChart(ws, CStr(readingName), readData, _
+                                                    specMax, specMin, currentRow, 1, params)
+
+        currentRow = currentRow + blockHeight + 2
+    Next readingName
+
+    CreateCombineDistributionCharts = currentRow - startRow
+End Function
+
+' ========== OLP 測試的分佈圖（1 個圖表：Reading）==========
+
+Function CreateOLPDistributionCharts(ws As Worksheet, seqInfo As Object, _
+                                     lines() As String, startRow As Long) As Long
+    ' 1. 提取參數
+    Dim params As Object
+    Set params = ExtractOLPParams(lines, seqInfo("startLine"), seqInfo("loadName"))
+
+    ' 2. 提取讀值
+    Dim readData As Object
+    Set readData = ExtractAllOLPReads(lines, seqInfo("title"))
+
+    If readData.Count = 0 Then
+        CreateOLPDistributionCharts = 0
+        Exit Function
+    End If
+
+    ' 3. 顯示 SEQ 標題
+    Dim titleRow As Long
+    titleRow = startRow
+    ws.Cells(titleRow, 1).value = seqInfo("title") & " - 分佈圖"
+    ws.Cells(titleRow, 1).Font.Bold = True
+    ws.Cells(titleRow, 1).Font.Size = 14
+    ws.Cells(titleRow, 1).Font.Color = RGB(68, 114, 196)
+
+    ' 4. 定義讀值（OLP 只有 1 個：Reading）
+    Dim readingNames As Variant
+    readingNames = Array("Reading")
+
+    ' 5. 生成圖表
+    Dim currentRow As Long
+    currentRow = titleRow + 2
+
+    Dim readingName As Variant
+    Dim specMax As Variant, specMin As Variant
+    Dim blockHeight As Long
+
+    For Each readingName In readingNames
+        specMax = ""
+        specMin = ""
+        If params.Exists("ReadingMax") Then specMax = params("ReadingMax")
+        If params.Exists("ReadingMin") Then specMin = params("ReadingMin")
+
+        blockHeight = CreateSingleDistributionChart(ws, CStr(readingName), readData, _
+                                                    specMax, specMin, currentRow, 1, params)
+
+        currentRow = currentRow + blockHeight + 2
+    Next readingName
+
+    CreateOLPDistributionCharts = currentRow - startRow
+End Function
+
+' ========== Dynamic 測試的分佈圖（2 個圖表：Vs1, Vs2）==========
+
+Function CreateDynamicDistributionCharts(ws As Worksheet, seqInfo As Object, _
+                                         lines() As String, startRow As Long) As Long
+    ' 1. 提取參數
+    Dim params As Object
+    Set params = ExtractDynamicParams(lines, seqInfo("startLine"), seqInfo("loadName"))
+
+    ' 2. 提取讀值
+    Dim readData As Object
+    Set readData = ExtractAllDynamicReads(lines, seqInfo("title"))
+
+    If readData.Count = 0 Then
+        CreateDynamicDistributionCharts = 0
+        Exit Function
+    End If
+
+    ' 3. 顯示 SEQ 標題
+    Dim titleRow As Long
+    titleRow = startRow
+    ws.Cells(titleRow, 1).value = seqInfo("title") & " - 分佈圖"
+    ws.Cells(titleRow, 1).Font.Bold = True
+    ws.Cells(titleRow, 1).Font.Size = 14
+    ws.Cells(titleRow, 1).Font.Color = RGB(68, 114, 196)
+
+    ' 4. 定義讀值（Dynamic 有 2 個：Vs1, Vs2）
+    Dim readingNames As Variant
+    readingNames = Array("Vs1", "Vs2")
+
+    ' 5. 生成圖表
+    Dim currentRow As Long
+    currentRow = titleRow + 2
+
+    Dim readingName As Variant
+    Dim specMax As Variant, specMin As Variant
+    Dim blockHeight As Long
+
+    For Each readingName In readingNames
+        ' 參數映射
+        specMax = ""
+        specMin = ""
+
+        If CStr(readingName) = "Vs1" Then
+            If params.Exists("VsMax") Then specMax = params("VsMax")
+            If params.Exists("VsMin") Then specMin = params("VsMin")
+        ElseIf CStr(readingName) = "Vs2" Then
+            ' Vs2 通常使用相同的 VsMax/VsMin
+            If params.Exists("VsMax") Then specMax = params("VsMax")
+            If params.Exists("VsMin") Then specMin = params("VsMin")
+        End If
+
+        blockHeight = CreateSingleDistributionChart(ws, CStr(readingName), readData, _
+                                                    specMax, specMin, currentRow, 1, params)
+
+        currentRow = currentRow + blockHeight + 2
+    Next readingName
+
+    CreateDynamicDistributionCharts = currentRow - startRow
+End Function
+
+' ========== InputOutput 測試的分佈圖（多個讀值，依子類型不同）==========
+
+Function CreateInputOutputDistributionCharts(ws As Worksheet, seqInfo As Object, _
+                                             lines() As String, startRow As Long) As Long
+    ' 1. 提取參數
+    Dim params As Object
+    Set params = ExtractInputOutputParams(lines, seqInfo("startLine"), seqInfo("loadName"), seqInfo("type"))
+
+    ' 2. 提取讀值
+    Dim readData As Object
+    Set readData = ExtractAllInputOutputReads(lines, seqInfo("title"), seqInfo("type"))
+
+    If readData.Count = 0 Then
+        CreateInputOutputDistributionCharts = 0
+        Exit Function
+    End If
+
+    ' 3. 顯示 SEQ 標題
+    Dim titleRow As Long
+    titleRow = startRow
+    ws.Cells(titleRow, 1).value = seqInfo("title") & " - 分佈圖"
+    ws.Cells(titleRow, 1).Font.Bold = True
+    ws.Cells(titleRow, 1).Font.Size = 14
+    ws.Cells(titleRow, 1).Font.Color = RGB(68, 114, 196)
+
+    ' 4. 定義讀值（根據子類型決定）
+    Dim readingNames As Variant
+
+    ' InputOutput 的讀值通常包括：Idc, Vin, Pin, Eff, PF 等
+    ' 這裡列出所有可能的讀值，實際會根據數據存在性生成
+    readingNames = Array("Idc", "Vin", "Pin", "Eff", "PF", "VinRead")
+
+    ' 5. 生成圖表
+    Dim currentRow As Long
+    currentRow = titleRow + 2
+
+    Dim readingName As Variant
+    Dim specMax As Variant, specMin As Variant
+    Dim blockHeight As Long
+
+    For Each readingName In readingNames
+        ' 檢查該讀值是否存在於數據中
+        Dim hasReading As Boolean
+        hasReading = False
+
+        Dim snKey As Variant
+        For Each snKey In readData.Keys
+            If readData(snKey).Exists(CStr(readingName)) Then
+                hasReading = True
+                Exit For
+            End If
+        Next snKey
+
+        If Not hasReading Then
+            ' 跳過不存在的讀值
+            GoTo NextReading
+        End If
+
+        ' 參數映射
+        specMax = ""
+        specMin = ""
+
+        Select Case CStr(readingName)
+            Case "Idc"
+                ' Idc 可能有 Iinrms Max 作為 Spec
+                If params.Exists("IinrmsMax") Then specMax = params("IinrmsMax")
+
+            Case "Pin"
+                If params.Exists("PinMax") Then specMax = params("PinMax")
+
+            Case "Eff"
+                If params.Exists("EffMin") Then specMin = params("EffMin")
+
+            Case "Vin", "VinRead"
+                If params.Exists("VinMax") Then specMax = params("VinMax")
+                If params.Exists("VinMin") Then specMin = params("VinMin")
+
+            Case "PF"
+                ' PF 通常沒有 Spec
+
+        End Select
+
+        blockHeight = CreateSingleDistributionChart(ws, CStr(readingName), readData, _
+                                                    specMax, specMin, currentRow, 1, params)
+
+        currentRow = currentRow + blockHeight + 2
+
+NextReading:
+    Next readingName
+
+    CreateInputOutputDistributionCharts = currentRow - startRow
+End Function
+
+' ========== 結束 ==========
+
+' 使用方式：
+' 1. 將此檔案的代碼加入到 "分布圖功能_VBA代碼.txt" 中
+' 2. 替換 CreateDistributionChartsForAllSequences 函數的 Select Case 區塊
+' 3. 測試所有測試類型的分佈圖生成

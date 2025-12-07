@@ -1,0 +1,325 @@
+' ============================================================
+' 分佈圖功能 - 隱藏數據版
+' 修正日期：2025-12-04
+' 新增功能：
+'   1. 自動隱藏計算數據欄位
+'   2. 數據放在固定區域（AA 欄開始）
+'   3. 清爽的顯示界面
+' ============================================================
+
+' ========== 修改重點 ==========
+'
+' 在 CreateSingleDistributionChart_V2 函數中：
+'
+' 【原本】
+'     dataStartCol = startCol + 30  ' 遠離顯示區域
+'
+' 【修改為】
+'     dataStartCol = 27  ' 固定使用 AA 欄開始（第 27 欄 = AA）
+'
+' 然後在 CreateDistributionChartsForAllSequences 最後加入：
+'     ' 隱藏計算數據欄位（AA 欄及之後）
+'     ws.Range("AA:ZZ").Hidden = True
+'
+' ============================================================
+
+' ========== 完整修正後的核心函數 ==========
+
+' 為單個讀值生成分佈圖（左參數表 + 右圖表）- 隱藏數據版
+Function CreateSingleDistributionChart_V2(ws As Worksheet, readingName As String, _
+                                          readData As Object, _
+                                          specMax As Variant, specMin As Variant, _
+                                          blockRow As Long, startCol As Long, _
+                                          params As Object) As Long
+    ' === 1. 收集讀值數據 ===
+    Dim readingValues As Collection
+    Set readingValues = CollectReadingValues(readData, readingName)
+
+    If readingValues.Count = 0 Then
+        CreateSingleDistributionChart_V2 = 0
+        Exit Function
+    End If
+
+    ' === 2. 左側參數表（完整參數列表）===
+    Dim paramStartCol As Long
+    paramStartCol = startCol
+
+    ' Condition 標題行
+    ws.Cells(blockRow, paramStartCol).Value = "Condition"
+    ws.Cells(blockRow, paramStartCol).Font.Bold = True
+    ws.Cells(blockRow, paramStartCol).Interior.Color = RGB(255, 224, 178)  ' 淺橘色
+    ws.Cells(blockRow, paramStartCol).HorizontalAlignment = xlCenter
+    ws.Columns(paramStartCol).ColumnWidth = 18
+
+    ' Value 標題行
+    ws.Cells(blockRow, paramStartCol + 1).Value = "Value"
+    ws.Cells(blockRow, paramStartCol + 1).Font.Bold = True
+    ws.Cells(blockRow, paramStartCol + 1).Interior.Color = RGB(255, 249, 196)  ' 淺黃色
+    ws.Cells(blockRow, paramStartCol + 1).HorizontalAlignment = xlCenter
+    ws.Columns(paramStartCol + 1).ColumnWidth = 12
+
+    ' 寫入所有參數
+    Dim paramRow As Long
+    paramRow = blockRow + 1
+
+    Dim key As Variant
+    For Each key In params.Keys
+        ws.Cells(paramRow, paramStartCol).Value = CStr(key)
+        ws.Cells(paramRow, paramStartCol + 1).Value = params(key)
+        paramRow = paramRow + 1
+    Next key
+
+    ' 加入 Spec Max/Min（如果有）
+    If specMax <> "" And specMax <> "*" Then
+        ws.Cells(paramRow, paramStartCol).Value = readingName & " Max"
+        ws.Cells(paramRow, paramStartCol + 1).Value = specMax
+        ws.Cells(paramRow, paramStartCol).Font.Color = RGB(255, 0, 0)  ' 紅色
+        ws.Cells(paramRow, paramStartCol).Font.Bold = True
+        paramRow = paramRow + 1
+    End If
+
+    If specMin <> "" And specMin <> "*" Then
+        ws.Cells(paramRow, paramStartCol).Value = readingName & " Min"
+        ws.Cells(paramRow, paramStartCol + 1).Value = specMin
+        ws.Cells(paramRow, paramStartCol).Font.Color = RGB(0, 176, 80)  ' 綠色
+        ws.Cells(paramRow, paramStartCol).Font.Bold = True
+        paramRow = paramRow + 1
+    End If
+
+    ' 計算參數表高度
+    Dim paramTableHeight As Long
+    paramTableHeight = paramRow - blockRow
+
+    ' === 3. 右側分佈圖 ===
+    Dim chartStartCol As Long
+    chartStartCol = paramStartCol + 3  ' 參數表後空 1 欄，圖表從第 4 欄開始
+
+    ' 數據處理：四捨五入、去重、排序
+    Dim processedData As Collection
+    Set processedData = ProcessReadingValues(readingValues)
+
+    If processedData.Count = 0 Then
+        CreateSingleDistributionChart_V2 = paramTableHeight
+        Exit Function
+    End If
+
+    ' 頻率計算
+    Dim freqData As Object
+    Set freqData = CalculateFrequencyData(readingValues, processedData)
+
+    ' ===【修改重點】建立數據表（固定放在 AA 欄開始）===
+    Dim dataStartRow As Long, dataStartCol As Long
+    dataStartRow = blockRow
+    dataStartCol = 27  ' AA 欄 = 第 27 欄（稍後會自動隱藏）
+
+    Call WriteDistributionDataToSheet(ws, freqData, specMax, specMin, dataStartRow, dataStartCol)
+
+    ' 創建圖表物件
+    Dim chartObj As ChartObject
+    On Error Resume Next
+
+    Set chartObj = ws.ChartObjects.Add( _
+        Left:=ws.Columns(chartStartCol).Left, _
+        Top:=ws.Rows(blockRow).Top, _
+        Width:=400, _
+        Height:=250)
+
+    If Err.Number <> 0 Then
+        Debug.Print "圖表創建錯誤：" & Err.Description
+        Err.Clear
+        CreateSingleDistributionChart_V2 = paramTableHeight
+        Exit Function
+    End If
+    On Error GoTo 0
+
+    ' 設定圖表數據來源和樣式
+    Call ConfigureDistributionChart(chartObj.Chart, ws, readingName, _
+                                    dataStartRow, dataStartCol, freqData.Count, _
+                                    specMax, specMin)
+
+    ' 返回使用的行數
+    Dim chartRowHeight As Long
+    chartRowHeight = 16
+
+    If chartRowHeight > paramTableHeight Then
+        CreateSingleDistributionChart_V2 = chartRowHeight
+    Else
+        CreateSingleDistributionChart_V2 = paramTableHeight
+    End If
+End Function
+
+' ========== 主函數修正 ==========
+
+' 主函數：為所有測試序列生成分佈圖
+Sub CreateDistributionChartsForAllSequences(allSequences As Object, lines() As String)
+    ' 創建新工作表
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ActiveWorkbook.Worksheets("分佈圖")
+    On Error GoTo 0
+
+    If ws Is Nothing Then
+        Set ws = ActiveWorkbook.Worksheets.Add(After:=ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.Count))
+        ws.Name = "分佈圖"
+    Else
+        ' 清空現有內容（先取消隱藏，清空後再重新隱藏）
+        ws.Cells.EntireColumn.Hidden = False
+        ws.Cells.Clear
+        ws.ChartObjects.Delete
+    End If
+
+    Dim chartStartRow As Long
+    chartStartRow = 2
+
+    Dim seqIndex As Variant
+    Dim seqInfo As Object
+    Dim blockHeight As Long
+
+    ' 遍歷所有序列
+    For Each seqIndex In allSequences.Keys
+        Set seqInfo = allSequences(seqIndex)
+
+        Application.StatusBar = "生成分佈圖：" & seqInfo("type") & " - " & seqInfo("loadName")
+
+        ' 根據測試類型調用對應函數
+        Select Case seqInfo("type")
+            Case "LoadRegulation"
+                blockHeight = CreateLoadRegulationDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "TurnOn"
+                blockHeight = CreateTurnOnDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "HoldUp"
+                blockHeight = CreateHoldUpDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "ShortCircuit"
+                blockHeight = CreateShortCircuitDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "Combine"
+                blockHeight = CreateCombineDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "OLP"
+                blockHeight = CreateOLPDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "Dynamic"
+                blockHeight = CreateDynamicDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+            Case "InputOutput_Iin", "InputOutput_Pin", "InputOutput_Eff", "InputOutput_General"
+                blockHeight = CreateInputOutputDistributionCharts(ws, seqInfo, lines, chartStartRow)
+                chartStartRow = chartStartRow + blockHeight + 5
+
+        End Select
+    Next seqIndex
+
+    ' ===【新增】隱藏計算數據欄位（AA 欄及之後）===
+    ws.Range("AA:ZZ").Hidden = True
+
+    ' 設定顯示區域的欄寬
+    ws.Columns("A:B").ColumnWidth = 15  ' 參數表欄位
+    ws.Columns("C:C").ColumnWidth = 2   ' 分隔欄
+    ' D 欄之後是圖表區域，不設定寬度
+
+    ' 設定工作表樣式
+    ws.Cells.Font.Name = "Calibri"
+    ws.Cells.Font.Size = 10
+    ws.Activate
+    ws.Range("A1").Select
+End Sub
+
+' ============================================================
+' 【方案 2 補充】如果您想用「放在圖表下方」的方式
+' ============================================================
+
+' 修改 CreateSingleDistributionChart_V2 中的數據位置：
+'     dataStartRow = blockRow + 18  ' 圖表下方（圖表高度約 16 行）
+'     dataStartCol = startCol
+'
+' 這樣數據會被圖表視覺覆蓋，但不需要隱藏欄位
+
+' ============================================================
+' 【方案 3 補充】如果您想用「隱藏工作表」的方式
+' ============================================================
+
+Function CreateHiddenDataSheet() As Worksheet
+    Dim dataWs As Worksheet
+
+    On Error Resume Next
+    Set dataWs = ActiveWorkbook.Worksheets("分佈圖_數據")
+    On Error GoTo 0
+
+    If dataWs Is Nothing Then
+        Set dataWs = ActiveWorkbook.Worksheets.Add
+        dataWs.Name = "分佈圖_數據"
+        dataWs.Visible = xlSheetVeryHidden  ' 完全隱藏（無法從右鍵選單取消隱藏）
+    Else
+        dataWs.Cells.Clear
+    End If
+
+    Set CreateHiddenDataSheet = dataWs
+End Function
+
+' 然後在 CreateSingleDistributionChart_V2 中：
+'     ' 使用隱藏工作表存放數據
+'     Dim dataWs As Worksheet
+'     Set dataWs = CreateHiddenDataSheet()
+'
+'     Call WriteDistributionDataToSheet(dataWs, freqData, specMax, specMin, dataStartRow, dataStartCol)
+'
+'     ' 圖表引用隱藏工作表的數據
+'     Call ConfigureDistributionChart(chartObj.Chart, dataWs, readingName, ...)
+
+' ============================================================
+' 使用建議
+' ============================================================
+'
+' 【最推薦】方案 1 - 隱藏欄位
+'   優點：數據在同一工作表，容易維護，隱藏後界面清爽
+'   缺點：如果需要檢查數據，要取消隱藏欄位
+'   使用方式：本檔案的預設實現
+'
+' 【替代】方案 2 - 圖表下方
+'   優點：數據和圖表在同一位置，方便對照
+'   缺點：滾動時可能看到數據，不夠美觀
+'   適合：需要經常檢查數據的情況
+'
+' 【進階】方案 3 - 隱藏工作表
+'   優點：完全不顯示數據，最清爽
+'   缺點：數據維護較麻煩，需要 VBA 才能取消隱藏
+'   適合：最終交付給用戶的版本
+'
+' ============================================================
+
+' ========== 取消隱藏的輔助函數 ==========
+
+' 如果需要檢查隱藏的數據，執行此函數
+Sub UnhideDataColumns()
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ActiveWorkbook.Worksheets("分佈圖")
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        ws.Range("AA:ZZ").Hidden = False
+        MsgBox "已取消隱藏計算數據欄位（AA-ZZ）", vbInformation, "完成"
+    End If
+End Sub
+
+' 重新隱藏數據
+Sub HideDataColumns()
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ActiveWorkbook.Worksheets("分佈圖")
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        ws.Range("AA:ZZ").Hidden = True
+        MsgBox "已隱藏計算數據欄位（AA-ZZ）", vbInformation, "完成"
+    End If
+End Sub

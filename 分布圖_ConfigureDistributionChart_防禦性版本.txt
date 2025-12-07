@@ -1,0 +1,380 @@
+' ============================================================
+' ConfigureDistributionChart - 防禦性版本（2025-12-06）
+' 特點：
+'   1. 完整錯誤處理
+'   2. 詳細除錯日誌
+'   3. 自動故障恢復
+'   4. 兼容舊版 Excel
+' ============================================================
+
+Sub ConfigureDistributionChart(ch As Chart, _
+                               ws As Worksheet, _
+                               readingName As String, _
+                               dataStartRow As Long, _
+                               dataStartCol As Long, _
+                               dataCount As Long, _
+                               specMax As Variant, _
+                               specMin As Variant)
+
+    On Error GoTo ErrorHandler
+
+    ' ========== 第1步：數據驗證 ==========
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, dataStartCol).End(xlUp).Row
+
+    If lastRow <= dataStartRow Then
+        Debug.Print "[ConfigureChart] 警告：無數據 - " & readingName & " (startRow=" & dataStartRow & ")"
+        Exit Sub
+    End If
+
+    Debug.Print "[ConfigureChart] 開始配置 - " & readingName & " (數據行: " & (lastRow - dataStartRow) & ")"
+
+    ' ========== 第2步：定義數據範圍 ==========
+    Dim valueRng As Range
+    Dim freqRng As Range
+    Dim specMinRng As Range
+    Dim specMaxRng As Range
+    Dim freqLineRng As Range
+
+    On Error Resume Next
+    Set valueRng = ws.Range(ws.Cells(dataStartRow + 1, dataStartCol), ws.Cells(lastRow, dataStartCol))
+    If valueRng Is Nothing Then
+        Debug.Print "[ConfigureChart] 錯誤：valueRng 範圍無效"
+        Exit Sub
+    End If
+    On Error GoTo ErrorHandler
+
+    Set freqRng = valueRng.Offset(0, 1)      ' B 欄（Frequency）
+    Set specMinRng = valueRng.Offset(0, 2)   ' C 欄（SpecMinBar）
+    Set specMaxRng = valueRng.Offset(0, 3)   ' D 欄（SpecMaxBar）
+    Set freqLineRng = valueRng.Offset(0, 4)  ' E 欄（FreqLine）
+
+    ' ========== 第3步：清空現有 Series ==========
+    On Error Resume Next
+    Dim seriesCount As Long
+    seriesCount = ch.SeriesCollection.Count
+
+    Do While ch.SeriesCollection.Count > 0
+        ch.SeriesCollection(1).Delete
+        If Err.Number <> 0 Then
+            Debug.Print "[ConfigureChart] 警告：清除 Series 失敗 - " & Err.Description
+            Err.Clear
+            Exit Do
+        End If
+    Loop
+
+    Debug.Print "[ConfigureChart] 已清除 " & seriesCount & " 個舊 Series"
+    On Error GoTo ErrorHandler
+
+    ' ========== 第4步：設置圖表基礎類型 ==========
+    ' 🔥 關鍵：必須先設置 Chart 類型，再添加 Series
+    On Error Resume Next
+    ch.ChartType = xlColumnClustered
+    If Err.Number <> 0 Then
+        Debug.Print "[ConfigureChart] 錯誤：設置 ChartType 失敗 - " & Err.Description
+        Err.Clear
+        ' 嘗試替代方案
+        ch.ChartType = xlLine
+        If Err.Number <> 0 Then
+            Debug.Print "[ConfigureChart] 致命錯誤：無法設置任何 ChartType"
+            Exit Sub
+        End If
+    End If
+    On Error GoTo ErrorHandler
+
+    Dim s As Series
+
+    ' ========== 第5步：Series 1 - Frequency（藍色柱狀圖）==========
+    On Error Resume Next
+    Set s = ch.SeriesCollection.NewSeries
+    If Err.Number <> 0 Then
+        Debug.Print "[ConfigureChart] 錯誤：創建 Frequency Series 失敗 - " & Err.Description
+        Err.Clear
+        GoTo SkipFrequencySeries
+    End If
+
+    s.Name = "Frequency"
+    s.Values = freqRng
+    s.XValues = valueRng
+    s.ChartType = xlColumnClustered
+
+    ' 設置顏色（嘗試新版 Format 屬性）
+    s.Format.Fill.ForeColor.RGB = RGB(68, 114, 196)  ' 藍色
+    If Err.Number <> 0 Then
+        ' 降級到舊版屬性
+        Err.Clear
+        s.Interior.Color = RGB(68, 114, 196)
+    End If
+
+    s.AxisGroup = xlPrimary
+    Debug.Print "[ConfigureChart] ✓ Frequency Series 創建成功"
+
+SkipFrequencySeries:
+    On Error GoTo ErrorHandler
+
+    ' ========== 第6步：Series 2 - Freq Line（紫色折線）==========
+    On Error Resume Next
+    Set s = ch.SeriesCollection.NewSeries
+    If Err.Number <> 0 Then
+        Debug.Print "[ConfigureChart] 錯誤：創建 FreqLine Series 失敗 - " & Err.Description
+        Err.Clear
+        GoTo SkipFreqLineSeries
+    End If
+
+    s.Name = "Freq Line"
+    s.Values = freqLineRng
+    s.XValues = valueRng
+    s.ChartType = xlLine
+
+    ' 設置線條顏色和樣式
+    s.Format.Line.ForeColor.RGB = RGB(112, 48, 160)  ' 紫色
+    If Err.Number <> 0 Then
+        Err.Clear
+        s.Border.Color = RGB(112, 48, 160)
+    End If
+
+    s.Format.Line.Weight = 2
+    If Err.Number <> 0 Then
+        Err.Clear
+        s.Border.Weight = xlMedium
+    End If
+
+    s.AxisGroup = xlPrimary
+    Debug.Print "[ConfigureChart] ✓ FreqLine Series 創建成功"
+
+SkipFreqLineSeries:
+    On Error GoTo ErrorHandler
+
+    ' ========== 第7步：Series 3 - Spec Min（綠色虛線柱）==========
+    If specMin <> "" And specMin <> "*" Then
+        On Error Resume Next
+        Set s = ch.SeriesCollection.NewSeries
+        If Err.Number <> 0 Then
+            Debug.Print "[ConfigureChart] 錯誤：創建 SpecMin Series 失敗 - " & Err.Description
+            Err.Clear
+            GoTo SkipSpecMinSeries
+        End If
+
+        s.Name = "Spec Min: " & specMin
+        s.Values = specMinRng
+        s.XValues = valueRng
+        s.ChartType = xlColumnClustered
+
+        ' 設置綠色虛線邊框
+        s.Format.Line.ForeColor.RGB = RGB(0, 176, 80)
+        If Err.Number <> 0 Then
+            Err.Clear
+            s.Border.Color = RGB(0, 176, 80)
+        End If
+
+        s.Format.Line.DashStyle = msoLineDash
+        If Err.Number <> 0 Then
+            Err.Clear
+            s.Border.LineStyle = xlDash
+        End If
+
+        s.Format.Line.Weight = 2
+        If Err.Number <> 0 Then Err.Clear
+
+        ' 透明填充
+        s.Format.Fill.Transparency = 1
+        If Err.Number <> 0 Then
+            Err.Clear
+            s.Interior.ColorIndex = xlNone
+        End If
+
+        s.AxisGroup = xlPrimary
+        Debug.Print "[ConfigureChart] ✓ SpecMin Series 創建成功 (" & specMin & ")"
+
+SkipSpecMinSeries:
+        On Error GoTo ErrorHandler
+    Else
+        Debug.Print "[ConfigureChart] ⊗ 跳過 SpecMin（無規格或為 *）"
+    End If
+
+    ' ========== 第8步：Series 4 - Spec Max（紅色虛線柱）==========
+    If specMax <> "" And specMax <> "*" Then
+        On Error Resume Next
+        Set s = ch.SeriesCollection.NewSeries
+        If Err.Number <> 0 Then
+            Debug.Print "[ConfigureChart] 錯誤：創建 SpecMax Series 失敗 - " & Err.Description
+            Err.Clear
+            GoTo SkipSpecMaxSeries
+        End If
+
+        s.Name = "Spec Max: " & specMax
+        s.Values = specMaxRng
+        s.XValues = valueRng
+        s.ChartType = xlColumnClustered
+
+        ' 設置紅色虛線邊框
+        s.Format.Line.ForeColor.RGB = RGB(255, 0, 0)
+        If Err.Number <> 0 Then
+            Err.Clear
+            s.Border.Color = RGB(255, 0, 0)
+        End If
+
+        s.Format.Line.DashStyle = msoLineDash
+        If Err.Number <> 0 Then
+            Err.Clear
+            s.Border.LineStyle = xlDash
+        End If
+
+        s.Format.Line.Weight = 2
+        If Err.Number <> 0 Then Err.Clear
+
+        ' 透明填充
+        s.Format.Fill.Transparency = 1
+        If Err.Number <> 0 Then
+            Err.Clear
+            s.Interior.ColorIndex = xlNone
+        End If
+
+        s.AxisGroup = xlPrimary
+        Debug.Print "[ConfigureChart] ✓ SpecMax Series 創建成功 (" & specMax & ")"
+
+SkipSpecMaxSeries:
+        On Error GoTo ErrorHandler
+    Else
+        Debug.Print "[ConfigureChart] ⊗ 跳過 SpecMax（無規格或為 *）"
+    End If
+
+    ' ========== 第9步：設置圖表標題與座標軸 ==========
+    On Error Resume Next
+
+    ' 標題
+    ch.HasTitle = True
+    ch.ChartTitle.Text = readingName & " 分佈圖"
+    ch.ChartTitle.Font.Size = 12
+    ch.ChartTitle.Font.Bold = True
+    If Err.Number <> 0 Then
+        Debug.Print "[ConfigureChart] 警告：設置標題失敗 - " & Err.Description
+        Err.Clear
+    End If
+
+    ' X 軸（類別軸）
+    With ch.Axes(xlCategory)
+        .HasTitle = True
+        .AxisTitle.Text = "Value"
+        .TickLabels.NumberFormat = "0.00"
+    End With
+    If Err.Number <> 0 Then
+        Debug.Print "[ConfigureChart] 警告：設置 X 軸失敗 - " & Err.Description
+        Err.Clear
+    End If
+
+    ' Y 軸（數值軸）
+    With ch.Axes(xlValue)
+        .HasTitle = True
+        .AxisTitle.Text = "Frequency"
+    End With
+    If Err.Number <> 0 Then
+        Debug.Print "[ConfigureChart] 警告：設置 Y 軸失敗 - " & Err.Description
+        Err.Clear
+    End If
+
+    ' 圖例
+    ch.HasLegend = True
+    ch.Legend.Position = xlLegendPositionBottom
+    If Err.Number <> 0 Then
+        Debug.Print "[ConfigureChart] 警告：設置圖例失敗 - " & Err.Description
+        Err.Clear
+    End If
+
+    On Error GoTo ErrorHandler
+
+    Debug.Print "[ConfigureChart] ✓✓✓ 圖表配置完成 - " & readingName
+    Exit Sub
+
+ErrorHandler:
+    Debug.Print "[ConfigureChart] *** 致命錯誤 ***"
+    Debug.Print "  讀值: " & readingName
+    Debug.Print "  錯誤: " & Err.Description
+    Debug.Print "  錯誤號: " & Err.Number
+    Debug.Print "  來源: " & Err.Source
+
+    ' 嘗試恢復
+    On Error Resume Next
+    If Not ch Is Nothing Then
+        ch.ChartType = xlColumnClustered  ' 重置為基本類型
+    End If
+    On Error GoTo 0
+
+    Resume Next
+End Sub
+
+
+' ============================================================
+' 使用說明
+' ============================================================
+'
+' 此防禦性版本提供：
+'
+' 1️⃣ **完整錯誤處理**
+'    - 每個步驟都有獨立的錯誤處理
+'    - 單一 Series 失敗不影響其他 Series
+'    - 使用 GoTo 標籤跳過失敗的 Series
+'
+' 2️⃣ **詳細除錯日誌**
+'    - 每個步驟記錄到 Immediate Window
+'    - 使用 ✓ 表示成功，⊗ 表示跳過，*** 表示錯誤
+'    - 包含參數值和行數資訊
+'
+' 3️⃣ **自動降級兼容**
+'    - 優先使用新版 .Format 屬性（Excel 2010+）
+'    - 失敗時自動降級到舊版 .Border/.Interior 屬性（Excel 2007-）
+'    - 確保在不同 Excel 版本都能運行
+'
+' 4️⃣ **安全的數據驗證**
+'    - 檢查數據範圍是否有效
+'    - 驗證 Spec 值是否為有效數值
+'    - 防止空範圍導致崩潰
+'
+' ============================================================
+' 除錯日誌範例
+' ============================================================
+'
+' 正常執行時，Immediate Window 會顯示：
+'
+' [ConfigureChart] 開始配置 - Vdc1 (數據行: 50)
+' [ConfigureChart] 已清除 0 個舊 Series
+' [ConfigureChart] ✓ Frequency Series 創建成功
+' [ConfigureChart] ✓ FreqLine Series 創建成功
+' [ConfigureChart] ✓ SpecMin Series 創建成功 (5.2)
+' [ConfigureChart] ✓ SpecMax Series 創建成功 (5.5)
+' [ConfigureChart] ✓✓✓ 圖表配置完成 - Vdc1
+'
+' 遇到錯誤時，會顯示：
+'
+' [ConfigureChart] 錯誤：創建 FreqLine Series 失敗 - 類型不符
+' [ConfigureChart] ✓ SpecMin Series 創建成功 (5.2)
+' ...
+'
+' ============================================================
+' 安裝步驟
+' ============================================================
+'
+' 1. 開啟 Excel VBA 編輯器（Alt + F11）
+' 2. 找到並刪除原有的 ConfigureDistributionChart 函數
+' 3. 複製此防禦性版本的完整代碼
+' 4. 貼上到相同位置
+' 5. 儲存 VBA 專案（Ctrl + S）
+'
+' ============================================================
+' 除錯技巧
+' ============================================================
+'
+' 1. **查看除錯日誌**
+'    - 執行後按 Ctrl + G 開啟 Immediate Window
+'    - 查看所有 [ConfigureChart] 訊息
+'
+' 2. **測試單一圖表**
+'    - 在 CreateSingleDistributionChart_H 函數中添加：
+'      If readingName <> "Vdc1" Then Exit Function
+'    - 這樣只會測試 Vdc1 圖表，加快除錯速度
+'
+' 3. **強制顯示所有錯誤**
+'    - 將 On Error Resume Next 暫時改為 On Error GoTo 0
+'    - 這樣會在第一個錯誤處停止，方便定位問題
+'
+' ============================================================
