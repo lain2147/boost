@@ -1,0 +1,317 @@
+' ==========================================
+' 分布圖資料準備功能（簡化版）
+' 版本：v1.1
+' 日期：2025-12-09
+' 功能：複製首頁 SEQ 和參數，預留計算欄位和圖表位置
+' ==========================================
+
+' ========== 主函數：建立分布圖資料表格 ==========
+Sub PrepareDistributionChartData(wb As Workbook)
+    On Error Resume Next
+
+    ' 取得來源工作表（第一頁）
+    Dim sourceWs As Worksheet
+    Set sourceWs = wb.Worksheets(1)
+
+    ' 建立或清空 Distribution Data 工作表
+    Dim chartDataWs As Worksheet
+    Set chartDataWs = Nothing
+
+    On Error Resume Next
+    Set chartDataWs = wb.Worksheets("Distribution Data")
+    On Error GoTo 0
+
+    If Not chartDataWs Is Nothing Then
+        Application.DisplayAlerts = False
+        chartDataWs.Cells.Clear
+        Application.DisplayAlerts = True
+    Else
+        Set chartDataWs = wb.Worksheets.Add(After:=sourceWs)
+        chartDataWs.Name = "Distribution Data"
+    End If
+
+    ' 掃描來源工作表的所有 SEQ 區域
+    Dim seqList As Collection
+    Set seqList = ScanAllSEQFromFirstSheet(sourceWs)
+
+    If seqList.Count = 0 Then
+        MsgBox "未找到任何 SEQ 區域！", vbExclamation
+        Exit Sub
+    End If
+
+    Debug.Print "找到 " & seqList.Count & " 個 SEQ 區域"
+
+    ' 為每個 SEQ 建立資料區塊（水平排列）
+    Dim currentCol As Long
+    currentCol = 1  ' 從 A 欄開始
+
+    Dim seqIdx As Long
+    For seqIdx = 1 To seqList.Count
+        Dim seqInfo As Object
+        Set seqInfo = seqList(seqIdx)
+
+        ' 建立該 SEQ 的資料區塊
+        Dim blockWidth As Long
+        blockWidth = CreateSEQDataBlock(sourceWs, chartDataWs, seqInfo, currentCol)
+
+        ' 下一個 SEQ 往右移動（間隔 2 欄）
+        currentCol = currentCol + blockWidth + 2
+    Next seqIdx
+
+    ' 完成
+    chartDataWs.Activate
+    chartDataWs.Range("A1").Select
+
+    MsgBox "分布圖資料結構建立完成！" & vbCrLf & _
+           "共處理 " & seqList.Count & " 個 SEQ", vbInformation
+
+    Debug.Print "分布圖資料表格建立完成！"
+End Sub
+
+' ========== 掃描第一頁的所有 SEQ 區域 ==========
+Function ScanAllSEQFromFirstSheet(ws As Worksheet) As Collection
+    Dim seqList As New Collection
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+
+    Debug.Print "開始掃描工作表: " & ws.Name
+    Debug.Print "總行數: " & lastRow
+
+    Dim i As Long
+    For i = 1 To lastRow
+        Dim cellValue As String
+        cellValue = Trim(ws.Cells(i, 1).Value)
+
+        ' Debug: 顯示前 50 行的 A 欄內容
+        If i <= 50 And cellValue <> "" Then
+            Debug.Print "行 " & i & ": " & cellValue
+        End If
+
+        ' 識別 SEQ 標題（例如：SEQ.2: Load Regulation Test）
+        If InStr(cellValue, "SEQ.") > 0 And InStr(cellValue, ":") > 0 Then
+            Dim seqInfo As Object
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+
+            Dim colonPos As Integer
+            colonPos = InStr(cellValue, ":")
+
+            Dim seqNumber As String
+            seqNumber = Trim(Left(cellValue, colonPos - 1))
+
+            Dim seqName As String
+            seqName = Trim(Mid(cellValue, colonPos + 1))
+
+            seqInfo("number") = seqNumber
+            seqInfo("name") = seqName
+            seqInfo("titleRow") = i
+
+            ' 找到此 SEQ 的結束行
+            Dim endRow As Long
+            endRow = lastRow
+
+            Dim j As Long
+            For j = i + 1 To lastRow
+                Dim nextCell As String
+                nextCell = Trim(ws.Cells(j, 1).Value)
+                If InStr(nextCell, "SEQ.") > 0 And j > i Then
+                    endRow = j - 1
+                    Exit For
+                End If
+            Next j
+
+            seqInfo("endRow") = endRow
+            seqList.Add seqInfo
+
+            Debug.Print "找到: " & seqNumber & " - " & seqName
+        End If
+    Next i
+
+    Set ScanAllSEQFromFirstSheet = seqList
+End Function
+
+' ========== 為單個 SEQ 建立資料區塊 ==========
+Function CreateSEQDataBlock(sourceWs As Worksheet, targetWs As Worksheet, _
+                           seqInfo As Object, startCol As Long) As Long
+
+    Dim currentRow As Long
+    currentRow = 1
+
+    ' 1. 寫入 SEQ 標題
+    targetWs.Cells(currentRow, startCol).Value = seqInfo("number") & ": " & seqInfo("name")
+    targetWs.Cells(currentRow, startCol).Font.Bold = True
+    targetWs.Cells(currentRow, startCol).Font.Size = 12
+    targetWs.Cells(currentRow, startCol).Interior.Color = RGB(198, 224, 180)
+
+    ' 合併標題（跨 6 欄：參數 2 欄 + 資料 2 欄 + 圖表標註 2 欄）
+    targetWs.Range(targetWs.Cells(currentRow, startCol), _
+                  targetWs.Cells(currentRow, startCol + 5)).Merge
+    targetWs.Cells(currentRow, startCol).HorizontalAlignment = xlCenter
+
+    currentRow = currentRow + 2  ' 空一行
+
+    ' 2. 複製參數表（從首頁）
+    Dim params As Object
+    Set params = ExtractParametersFromSEQ(sourceWs, seqInfo)
+
+    If params.Count > 0 Then
+        ' 寫入參數表標題
+        targetWs.Cells(currentRow, startCol).Value = "Condition"
+        targetWs.Cells(currentRow, startCol + 1).Value = "Value"
+
+        With targetWs.Range(targetWs.Cells(currentRow, startCol), _
+                           targetWs.Cells(currentRow, startCol + 1))
+            .Font.Bold = True
+            .Interior.Color = RGB(255, 224, 178)
+            .HorizontalAlignment = xlCenter
+        End With
+
+        currentRow = currentRow + 1
+
+        ' 寫入參數
+        Dim paramName As Variant
+        For Each paramName In params.Keys
+            targetWs.Cells(currentRow, startCol).Value = paramName
+            targetWs.Cells(currentRow, startCol + 1).Value = params(paramName)
+
+            ' Max 參數標紅色，Min 參數標綠色
+            If InStr(UCase(CStr(paramName)), "MAX") > 0 Then
+                targetWs.Cells(currentRow, startCol).Font.Color = RGB(255, 0, 0)
+                targetWs.Cells(currentRow, startCol).Font.Bold = True
+                targetWs.Cells(currentRow, startCol + 1).Font.Color = RGB(255, 0, 0)
+                targetWs.Cells(currentRow, startCol + 1).Font.Bold = True
+            ElseIf InStr(UCase(CStr(paramName)), "MIN") > 0 Then
+                targetWs.Cells(currentRow, startCol).Font.Color = RGB(0, 176, 80)
+                targetWs.Cells(currentRow, startCol).Font.Bold = True
+                targetWs.Cells(currentRow, startCol + 1).Font.Color = RGB(0, 176, 80)
+                targetWs.Cells(currentRow, startCol + 1).Font.Bold = True
+            End If
+
+            ' 淺黃色背景
+            targetWs.Cells(currentRow, startCol).Interior.Color = RGB(255, 249, 196)
+            targetWs.Cells(currentRow, startCol + 1).Interior.Color = RGB(255, 249, 196)
+
+            currentRow = currentRow + 1
+        Next paramName
+    Else
+        targetWs.Cells(currentRow, startCol).Value = "（未找到參數）"
+        targetWs.Cells(currentRow, startCol).Font.Italic = True
+        targetWs.Cells(currentRow, startCol).Font.Color = RGB(255, 0, 0)
+        currentRow = currentRow + 1
+    End If
+
+    ' 3. 預留資料計算欄位（2 欄）
+    Dim dataCol As Long
+    dataCol = startCol + 2
+
+    targetWs.Cells(3, dataCol).Value = "[資料欄位]"
+    targetWs.Cells(3, dataCol + 1).Value = "[頻率]"
+
+    With targetWs.Range(targetWs.Cells(3, dataCol), targetWs.Cells(3, dataCol + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(68, 114, 196)
+        .Font.Color = RGB(255, 255, 255)
+        .HorizontalAlignment = xlCenter
+    End With
+
+    ' 預留 15 行資料空間
+    Dim i As Long
+    For i = 4 To 18
+        targetWs.Cells(i, dataCol).Interior.Color = RGB(242, 242, 242)
+        targetWs.Cells(i, dataCol + 1).Interior.Color = RGB(242, 242, 242)
+    Next i
+
+    ' 4. 預留圖表位置標註
+    Dim chartCol As Long
+    chartCol = startCol + 4
+
+    targetWs.Cells(3, chartCol).Value = "[圖表區域]"
+    targetWs.Cells(3, chartCol).Font.Bold = True
+    targetWs.Cells(3, chartCol).Font.Italic = True
+    targetWs.Cells(3, chartCol).Font.Color = RGB(128, 128, 128)
+
+    ' 合併圖表區域標註（10 欄寬）
+    targetWs.Range(targetWs.Cells(3, chartCol), _
+                  targetWs.Cells(3, chartCol + 9)).Merge
+    targetWs.Cells(3, chartCol).HorizontalAlignment = xlCenter
+
+    ' 標註圖表範圍邊框
+    With targetWs.Range(targetWs.Cells(4, chartCol), _
+                       targetWs.Cells(18, chartCol + 9))
+        .Borders(xlEdgeLeft).LineStyle = xlDash
+        .Borders(xlEdgeTop).LineStyle = xlDash
+        .Borders(xlEdgeRight).LineStyle = xlDash
+        .Borders(xlEdgeBottom).LineStyle = xlDash
+        .Interior.Color = RGB(252, 252, 252)
+    End With
+
+    ' 設定欄寬
+    targetWs.Columns(startCol).ColumnWidth = 15
+    targetWs.Columns(startCol + 1).ColumnWidth = 12
+    targetWs.Columns(dataCol).ColumnWidth = 12
+    targetWs.Columns(dataCol + 1).ColumnWidth = 10
+
+    ' 返回此 SEQ 使用的總欄寬
+    ' 參數 2 欄 + 資料 2 欄 + 圖表 10 欄 = 14 欄
+    CreateSEQDataBlock = 14
+
+    Debug.Print "  建立完成: " & seqInfo("number")
+End Function
+
+' ========== 從 SEQ 區域提取參數 ==========
+Function ExtractParametersFromSEQ(ws As Worksheet, seqInfo As Object) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+
+    Dim startRow As Long
+    Dim endRow As Long
+    startRow = seqInfo("titleRow")
+    endRow = seqInfo("endRow")
+
+    ' 尋找 Condition/Value 欄位
+    Dim i As Long
+    Dim condCol As Long
+    Dim valueCol As Long
+    condCol = 0
+    valueCol = 0
+
+    For i = startRow To endRow
+        Dim lastCol As Long
+        lastCol = ws.Cells(i, ws.Columns.Count).End(xlToLeft).Column
+
+        Dim col As Long
+        For col = 1 To lastCol
+            Dim cellVal As String
+            cellVal = Trim(ws.Cells(i, col).Value)
+
+            If cellVal = "Condition" Then
+                condCol = col
+            ElseIf cellVal = "Value" And condCol > 0 Then
+                valueCol = col
+
+                ' 找到參數表，開始提取
+                Dim paramRow As Long
+                For paramRow = i + 1 To endRow
+                    Dim paramName As String
+                    Dim paramValue As Variant
+
+                    paramName = Trim(ws.Cells(paramRow, condCol).Value)
+                    paramValue = ws.Cells(paramRow, valueCol).Value
+
+                    ' 停止條件
+                    If paramName = "" Or paramName = "S/N" Then
+                        Exit For
+                    End If
+
+                    ' 儲存參數
+                    params(paramName) = paramValue
+                    Debug.Print "    參數: " & paramName & " = " & paramValue
+                Next paramRow
+
+                GoTo ParamsFound
+            End If
+        Next col
+    Next i
+
+ParamsFound:
+    Set ExtractParametersFromSEQ = params
+End Function

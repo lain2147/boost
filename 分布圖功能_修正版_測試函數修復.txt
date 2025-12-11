@@ -1,0 +1,354 @@
+' ============================================================
+' 分佈圖功能 - 測試函數修復版
+' 修復日期：2025-12-07
+' 修復內容：
+'   1. 修正 TestSingleChart 執行階段錯誤 '5'
+'   2. 確保工作表正確設定
+'   3. 改善圖表創建錯誤處理
+' ============================================================
+
+' ========== 修正後的測試函數 ==========
+
+Sub TestSingleChart()
+    ' 測試單一圖表生成（用於調試）- 修復版
+
+    On Error GoTo ErrorHandler
+
+    ' 確保使用當前活動工作表或創建新工作表
+    Dim ws As Worksheet
+
+    ' 嘗試獲取當前工作表
+    If ActiveSheet Is Nothing Then
+        MsgBox "請先開啟或選擇一個工作表！", vbExclamation
+        Exit Sub
+    End If
+
+    Set ws = ActiveSheet
+
+    ' 確認工作表名稱
+    Debug.Print "使用工作表：" & ws.Name
+
+    ' 清空現有內容（避免干擾）
+    ws.Cells.Clear
+    ws.ChartObjects.Delete  ' 刪除現有圖表
+
+    ' 創建測試資料
+    ' 標題
+    ws.Cells(1, 1).Value = "Value"
+    ws.Cells(1, 2).Value = "Frequency"
+    ws.Cells(1, 3).Value = "SpecMinBar"
+    ws.Cells(1, 4).Value = "SpecMaxBar"
+    ws.Cells(1, 5).Value = "FreqLine"
+
+    ' 測試資料
+    ws.Cells(2, 1).Value = 5.21
+    ws.Cells(2, 2).Value = 3
+    ws.Cells(2, 3).Value = 0
+    ws.Cells(2, 4).Value = 0
+    ws.Cells(2, 5).Value = 3
+
+    ws.Cells(3, 1).Value = 5.22
+    ws.Cells(3, 2).Value = 5
+    ws.Cells(3, 3).Value = 0
+    ws.Cells(3, 4).Value = 0
+    ws.Cells(3, 5).Value = 5
+
+    ws.Cells(4, 1).Value = 5.23
+    ws.Cells(4, 2).Value = 8
+    ws.Cells(4, 3).Value = 0
+    ws.Cells(4, 4).Value = 0
+    ws.Cells(4, 5).Value = 8
+
+    ws.Cells(5, 1).Value = 5.24
+    ws.Cells(5, 2).Value = 4
+    ws.Cells(5, 3).Value = 0
+    ws.Cells(5, 4).Value = 10  ' Spec Max 線
+    ws.Cells(5, 5).Value = 4
+
+    ' 設定列寬（改善可讀性）
+    ws.Columns("A:E").ColumnWidth = 12
+
+    ' 創建圖表（使用絕對位置）
+    Dim chartObj As ChartObject
+
+    ' 方法1：使用絕對像素位置（更穩定）
+    Set chartObj = ws.ChartObjects.Add( _
+        Left:=300, _
+        Top:=50, _
+        Width:=450, _
+        Height:=280)
+
+    Debug.Print "圖表已創建，位置：Left=300, Top=50"
+
+    ' 配置圖表
+    Call ConfigureDistributionChart(chartObj.Chart, ws, "測試讀值", 1, 1, 4, "5.24", "5.20")
+
+    MsgBox "測試圖表已生成！" & vbCrLf & _
+           "請檢查：" & vbCrLf & _
+           "1. 是否看到藍色柱狀圖" & vbCrLf & _
+           "2. 是否看到橘色折線" & vbCrLf & _
+           "3. 是否看到紅色 Spec Max 虛線" & vbCrLf & _
+           "4. 圖例是否正確顯示", vbInformation, "測試完成"
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "測試圖表生成錯誤！" & vbCrLf & _
+           "錯誤編號：" & Err.Number & vbCrLf & _
+           "錯誤描述：" & Err.Description & vbCrLf & _
+           "工作表：" & ws.Name, vbCritical, "錯誤"
+    Debug.Print "TestSingleChart 錯誤：" & Err.Description
+End Sub
+
+' ========== 改善版圖表創建函數（通用） ==========
+
+Function CreateChartSafely(ws As Worksheet, chartRow As Long, chartCol As Long, _
+                          chartWidth As Double, chartHeight As Double) As ChartObject
+    ' 安全創建圖表的通用函數
+
+    On Error GoTo ErrorHandler
+
+    Dim chartObj As ChartObject
+
+    ' 嘗試方法1：使用儲存格位置
+    On Error Resume Next
+    Set chartObj = ws.ChartObjects.Add( _
+        Left:=ws.Cells(chartRow, chartCol).Left, _
+        Top:=ws.Cells(chartRow, chartCol).Top, _
+        Width:=chartWidth, _
+        Height:=chartHeight)
+
+    If Err.Number <> 0 Then
+        ' 方法1失敗，嘗試方法2：使用絕對位置
+        Err.Clear
+
+        Dim leftPos As Double, topPos As Double
+        leftPos = (chartCol - 1) * 80  ' 估算位置
+        topPos = (chartRow - 1) * 20
+
+        Set chartObj = ws.ChartObjects.Add( _
+            Left:=leftPos, _
+            Top:=topPos, _
+            Width:=chartWidth, _
+            Height:=chartHeight)
+    End If
+    On Error GoTo 0
+
+    Set CreateChartSafely = chartObj
+    Exit Function
+
+ErrorHandler:
+    Debug.Print "CreateChartSafely 錯誤：" & Err.Description
+    Set CreateChartSafely = Nothing
+End Function
+
+' ========== 診斷工具函數（改善版） ==========
+
+Sub DiagnoseChartData()
+    ' 診斷當前工作表的圖表資料
+
+    If ActiveSheet Is Nothing Then
+        MsgBox "請先開啟或選擇一個工作表！", vbExclamation
+        Exit Sub
+    End If
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Debug.Print "========== 圖表資料診斷 =========="
+    Debug.Print "工作表名稱：" & ws.Name
+    Debug.Print "使用的 Excel 版本：" & Application.Version
+
+    ' 檢查 A-E 欄的資料
+    Dim col As Integer
+    For col = 1 To 5
+        Debug.Print "========== 欄位 " & Split("A,B,C,D,E", ",")(col - 1) & " =========="
+
+        ' 找最後一行
+        Dim lastRow As Long
+        lastRow = ws.Cells(ws.Rows.count, col).End(xlUp).row
+        Debug.Print "最後一行：" & lastRow
+
+        ' 顯示前 20 行資料
+        Dim i As Long
+        For i = 1 To Application.WorksheetFunction.Min(20, lastRow)
+            If ws.Cells(i, col).Value <> "" Then
+                Debug.Print "Row " & i & ": " & ws.Cells(i, col).Value
+            End If
+        Next i
+    Next col
+
+    ' 檢查現有圖表
+    Debug.Print "========== 現有圖表 =========="
+    Debug.Print "圖表數量：" & ws.ChartObjects.count
+
+    Dim chartIdx As Integer
+    For chartIdx = 1 To ws.ChartObjects.count
+        Debug.Print "圖表 " & chartIdx & "：" & ws.ChartObjects(chartIdx).Name
+    Next chartIdx
+
+    Debug.Print "=========================================="
+    MsgBox "診斷完成！請查看 Immediate 視窗（Ctrl+G）的詳細輸出。", vbInformation
+End Sub
+
+' ============================================================
+' 分佈圖功能摘要與規則記錄
+' ============================================================
+
+' ========== 核心規則與設計原則 ==========
+
+' 【1. 資料結構】
+'   - A-E 欄：隱藏的計算資料（Value, Frequency, SpecMinBar, SpecMaxBar, FreqLine）
+'   - F-G 欄：參數表（Condition, Value）
+'   - H-O 欄：分佈圖（柱狀圖 + 折線圖 + Spec 線）
+
+' 【2. 水平三區塊佈局（新版設計）】
+'   - 區塊1：圖表資料（2欄）- Value, Frequency
+'   - 區塊2：參數表（2欄）- Condition, Value
+'   - 區塊3：分佈圖（8欄）- 450px 寬度圖表
+'
+'   排列方式：[資料][參數][圖表]
+'   - 每個 SEQ 佔用 10 欄寬度
+'   - SEQ 間隔 2 欄
+
+' 【3. 圖表類型與 Series】
+'   Series 1: Frequency（藍色柱狀圖）
+'   Series 2: FreqLine（橘色折線圖）
+'   Series 3: Spec Min（綠色虛線）- 只在有值且觸及時顯示
+'   Series 4: Spec Max（紅色虛線）- 只在有值且觸及時顯示
+
+' 【4. 智能參數匹配規則】
+'   讀值名稱 → 參數名稱對應表：
+'   - VdcRead1/2/3 → VdcMax, VdcMin
+'   - VppRead1/2/3 → VppMax, VppMin
+'   - VnRead1/2/3 → VnMax, VnMin
+'   - Tds/Tdl → ThdMax, ThdMin
+'   - Vs1/Vs2 → VsMax, VsMin
+'   - Idc → IinrmsMax
+'   - Eff → EffMin
+'   - VinRead → VinMax, VinMin
+
+' 【5. 資料處理流程】
+'   1. CollectReadingValues: 收集讀值（清理 ?? 標記）
+'   2. ProcessReadingValues: 四捨五入、去重
+'   3. SortCollection: 從小到大排序
+'   4. CalculateFrequencyData: 計算頻率
+'   5. WriteDistributionDataToSheet: 寫入工作表（含 Spec 智能顯示）
+'   6. ConfigureDistributionChart: 配置圖表
+
+' 【6. Spec 線條智能顯示邏輯】
+'   - 檢查讀值是否觸及 Spec（minValue <= SpecMin 或 maxValue >= SpecMax）
+'   - 只有在觸及時才顯示對應的 Spec 線
+'   - 圖例永遠顯示 Spec 值（例如："Spec Max = 5.5"）
+
+' 【7. 四捨五入規則】
+'   RoundByValueRange 函數：
+'   - 絕對值 >= 1：四捨五入到小數第 2 位
+'   - 絕對值 < 1：
+'     - 小數位數 <= 3：保持不變
+'     - 小數位數 > 3：四捨五入到第 3 位
+
+' 【8. 測試類型與讀值對應】
+'   測試類型          | 讀值數量 | 讀值名稱
+'   ------------------|----------|------------------------------------------
+'   Turn On           | 1        | Reading
+'   Hold Up           | 2        | Tds, Tdl
+'   Short Circuit     | 1        | Pin
+'   Combine           | 6        | Vdc1, Vpp1, Vdc2, Vpp2, Vdc3, Vpp3
+'   OLP               | 1        | Reading
+'   Dynamic           | 2        | Vs1, Vs2
+'   Load Regulation   | 11       | VdcRead1-3, VppRead1-3, VnRead1-3, dV21, dV31
+'   InputOutput_Iin   | 8        | Iinrms, Pin, Pdc, Eff, Pf, IdcRead, VdcRead, VppRead
+'   InputOutput_Pin   | 8        | 同上
+'   InputOutput_Eff   | 8        | 同上
+'   InputOutput_General| 8       | Iinrms, Pin, Pdc, Eff, Pf, VinRead, VdcRead, VppRead
+
+' 【9. 錯誤處理規則】
+'   - 所有圖表創建函數都應有 On Error Resume Next
+'   - 錯誤時記錄到 Debug.Print
+'   - 返回 0 或 Nothing 表示失敗
+'   - 不中斷整體流程（容錯設計）
+
+' 【10. 效能優化規則】
+'   - 使用 Dictionary 儲存頻率資料（O(1) 查找）
+'   - 避免重複讀取工作表（快取資料）
+'   - 批量設定儲存格格式（Range 操作）
+'   - 關閉螢幕更新（Application.ScreenUpdating = False）
+
+' ============================================================
+' 常見問題與解決方案
+' ============================================================
+
+' 【問題1】執行階段錯誤 '5'：程序呼叫或引數不正確
+' 原因：
+'   - 工作表未正確設定（ws = Nothing）
+'   - 圖表位置參數不正確（負數或超出範圍）
+'   - 使用 ws.Cells().Left 時工作表未激活
+' 解決方案：
+'   1. 確保工作表已激活：ws.Activate
+'   2. 使用絕對位置：Left:=300, Top:=50
+'   3. 添加錯誤處理：On Error GoTo ErrorHandler
+'   4. 使用 CreateChartSafely 函數（雙重嘗試機制）
+
+' 【問題2】圖表顯示空白或數據不正確
+' 原因：
+'   - 資料範圍錯誤
+'   - Series 順序錯誤
+'   - XValues 未設定
+' 解決方案：
+'   1. 使用 DiagnoseChartData 診斷資料
+'   2. 檢查 lastRow 計算邏輯
+'   3. 確保 Series 按順序添加（Frequency → FreqLine → Spec）
+
+' 【問題3】Spec 線條不顯示
+' 原因：
+'   - specMax/specMin 為空字串或 "*"
+'   - 資料中沒有觸及 Spec 的點
+'   - SpecMinBar/SpecMaxBar 欄位都是 0
+' 解決方案：
+'   1. 檢查 GetSpecForReading 函數是否正確匹配
+'   2. 檢查 WriteDistributionDataToSheet 的 Spec 判斷邏輯
+'   3. 手動添加 Spec 資料點（如果不存在）
+
+' 【問題4】圖表重疊或位置錯誤
+' 原因：
+'   - 多個 SEQ 使用相同起始欄
+'   - blockWidth 計算錯誤
+'   - 沒有正確更新 chartStartCol
+' 解決方案：
+'   1. 確保每個 SEQ 後更新：chartStartCol = chartStartCol + blockWidth + 2
+'   2. 每個測試類型返回固定寬度（10 欄）
+'   3. 使用 SEQ 標題合併儲存格確認範圍
+
+' ============================================================
+' 使用指南
+' ============================================================
+
+' 【執行分佈圖生成】
+'   1. 按 Alt+F11 開啟 VBA 編輯器
+'   2. 執行 GenerateSEQDistributionCharts
+'   3. 選擇 TXT 測試報告檔案
+'   4. 等待處理完成
+'   5. 新工作簿中查看 "分佈圖" 工作表
+
+' 【測試單一圖表】
+'   1. 執行 TestSingleChart（測試圖表創建功能）
+'   2. 檢查測試圖表是否正確顯示
+
+' 【診斷資料問題】
+'   1. 執行 DiagnoseChartData
+'   2. 按 Ctrl+G 開啟 Immediate 視窗
+'   3. 查看詳細診斷輸出
+
+' 【顯示/隱藏計算資料】
+'   - 執行 UnhideDataColumns: 顯示 A-E 欄
+'   - 執行 HideDataColumns: 隱藏 A-E 欄
+
+' ============================================================
+' 修改歷史
+' ============================================================
+' 2025-12-07: 修正 TestSingleChart 執行階段錯誤 '5'
+'             - 改用絕對位置創建圖表
+'             - 添加 CreateChartSafely 雙重嘗試機制
+'             - 改善錯誤處理和診斷輸出
+' ============================================================

@@ -1,0 +1,512 @@
+' ==========================================
+' 分布圖資料準備功能
+' 版本：v1.0
+' 日期：2025-12-09
+' 功能：從第一頁測試報告自動建立分布圖資料表格
+' ==========================================
+
+' ========== 主函數：建立分布圖資料表格 ==========
+' 在主程式執行完成後呼叫此函數
+Sub PrepareDistributionChartData(wb As Workbook)
+    On Error Resume Next
+
+    ' 取得來源工作表（第一頁）
+    Dim sourceWs As Worksheet
+    Set sourceWs = wb.Worksheets(1)
+
+    ' 建立或取得 Distribution Data 工作表
+    Dim chartDataWs As Worksheet
+    Set chartDataWs = Nothing
+
+    ' 檢查是否已存在同名工作表
+    On Error Resume Next
+    Set chartDataWs = wb.Worksheets("Distribution Data")
+    On Error GoTo 0
+
+    If Not chartDataWs Is Nothing Then
+        ' 如果已存在，清空內容
+        Application.DisplayAlerts = False
+        chartDataWs.Cells.Clear
+        Application.DisplayAlerts = True
+    Else
+        ' 如果不存在，建立新工作表
+        Set chartDataWs = wb.Worksheets.Add(After:=sourceWs)
+        chartDataWs.Name = "Distribution Data"
+    End If
+
+    ' 掃描來源工作表的所有 SEQ 區域
+    Dim seqList As Collection
+    Set seqList = ScanAllSEQFromFirstSheet(sourceWs)
+
+    If seqList.Count = 0 Then
+        Debug.Print "未找到任何 SEQ 區域"
+        Exit Sub
+    End If
+
+    Debug.Print "找到 " & seqList.Count & " 個 SEQ 區域"
+
+    ' 為每個 SEQ 建立分布圖資料區塊（水平排列）
+    Dim currentCol As Long
+    currentCol = 1  ' 從 A 欄開始
+
+    Dim seqIdx As Long
+    For seqIdx = 1 To seqList.Count
+        Dim seqInfo As Object
+        Set seqInfo = seqList(seqIdx)
+
+        ' 建立該 SEQ 的所有分布圖資料區塊
+        Dim blockWidth As Long
+        blockWidth = CreateDistributionDataForOneSEQ(sourceWs, chartDataWs, seqInfo, currentCol)
+
+        ' 下一個 SEQ 往右移動（間隔 2 欄）
+        currentCol = currentCol + blockWidth + 2
+    Next seqIdx
+
+    ' 設定基本格式
+    chartDataWs.Rows(1).Font.Bold = True
+    chartDataWs.Activate
+    chartDataWs.Range("A1").Select
+
+    Debug.Print "分布圖資料表格建立完成！"
+End Sub
+
+' ========== 掃描第一頁的所有 SEQ 區域 ==========
+Function ScanAllSEQFromFirstSheet(ws As Worksheet) As Collection
+    Dim seqList As New Collection
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+
+    Dim i As Long
+    For i = 1 To lastRow
+        Dim cellValue As String
+        cellValue = Trim(ws.Cells(i, 1).Value)
+
+        ' 識別 SEQ 標題（例如：SEQ.2: Load Regulation Test）
+        If InStr(cellValue, "SEQ.") > 0 And InStr(cellValue, ":") > 0 Then
+            Dim seqInfo As Object
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+
+            ' 提取 SEQ 編號和名稱
+            Dim colonPos As Integer
+            colonPos = InStr(cellValue, ":")
+
+            Dim seqNumber As String
+            seqNumber = Trim(Left(cellValue, colonPos - 1))  ' "SEQ.2"
+
+            Dim seqName As String
+            seqName = Trim(Mid(cellValue, colonPos + 1))  ' "Load Regulation Test"
+
+            seqInfo("number") = seqNumber
+            seqInfo("name") = seqName
+            seqInfo("titleRow") = i
+
+            ' 找到此 SEQ 的結束行（下一個 SEQ 或工作表結尾）
+            Dim endRow As Long
+            endRow = lastRow
+
+            Dim j As Long
+            For j = i + 1 To lastRow
+                Dim nextCell As String
+                nextCell = Trim(ws.Cells(j, 1).Value)
+                If InStr(nextCell, "SEQ.") > 0 And j > i Then
+                    endRow = j - 1
+                    Exit For
+                End If
+            Next j
+
+            seqInfo("endRow") = endRow
+
+            ' 加入集合
+            seqList.Add seqInfo
+
+            Debug.Print "找到: " & seqNumber & " - " & seqName & " (行 " & i & " 到 " & endRow & ")"
+        End If
+    Next i
+
+    Set ScanAllSEQFromFirstSheet = seqList
+End Function
+
+' ========== 為單個 SEQ 建立分布圖資料區塊 ==========
+Function CreateDistributionDataForOneSEQ(sourceWs As Worksheet, chartDataWs As Worksheet, _
+                                         seqInfo As Object, startCol As Long) As Long
+    ' 返回值：此 SEQ 使用的總欄位寬度
+
+    ' 1. 提取此 SEQ 的參數
+    Dim params As Object
+    Set params = ExtractParametersFromSEQ(sourceWs, seqInfo)
+
+    ' 2. 識別此 SEQ 的所有讀值欄位
+    Dim readingsList As Collection
+    Set readingsList = IdentifyReadingColumnsFromSEQ(sourceWs, seqInfo)
+
+    If readingsList.Count = 0 Then
+        Debug.Print "  " & seqInfo("number") & " 沒有找到讀值欄位"
+        CreateDistributionDataForOneSEQ = 0
+        Exit Function
+    End If
+
+    Debug.Print "  " & seqInfo("number") & " 找到 " & readingsList.Count & " 個讀值欄位"
+
+    ' 3. 寫入 SEQ 標題
+    Dim currentRow As Long
+    currentRow = 1
+
+    chartDataWs.Cells(currentRow, startCol).Value = seqInfo("number") & ": " & seqInfo("name")
+    chartDataWs.Cells(currentRow, startCol).Font.Bold = True
+    chartDataWs.Cells(currentRow, startCol).Font.Size = 12
+    chartDataWs.Cells(currentRow, startCol).Interior.Color = RGB(198, 224, 180)
+
+    ' 合併標題儲存格（參數表 2 欄 + 數據表 2 欄 = 4 欄）
+    chartDataWs.Range(chartDataWs.Cells(currentRow, startCol), _
+                     chartDataWs.Cells(currentRow, startCol + 3)).Merge
+    chartDataWs.Cells(currentRow, startCol).HorizontalAlignment = xlCenter
+
+    currentRow = currentRow + 2  ' 標題後空一行
+
+    ' 4. 為每個讀值建立資料區塊（垂直排列）
+    Dim readingIdx As Long
+    For readingIdx = 1 To readingsList.Count
+        Dim readingInfo As Object
+        Set readingInfo = readingsList(readingIdx)
+
+        ' 提取該讀值的所有數據
+        Dim readingData As Collection
+        Set readingData = ExtractReadingDataFromSEQ(sourceWs, seqInfo, readingInfo("colIndex"))
+
+        If readingData.Count > 0 Then
+            ' 建立一個完整的分布圖資料區塊
+            Call CreateOneDistributionDataBlock(chartDataWs, params, readingInfo, readingData, currentRow, startCol)
+
+            ' 下一個讀值往下移動（預留 20 行空間，未來放圖表）
+            currentRow = currentRow + 20
+        End If
+    Next readingIdx
+
+    ' 返回此 SEQ 使用的總欄位寬度
+    ' 參數表（2 欄）+ 數據表（2 欄）+ 圖表空間（10 欄）= 14 欄
+    CreateDistributionDataForOneSEQ = 14
+End Function
+
+' ========== 從 SEQ 區域提取參數 ==========
+Function ExtractParametersFromSEQ(ws As Worksheet, seqInfo As Object) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+
+    Dim startRow As Long
+    Dim endRow As Long
+    startRow = seqInfo("titleRow")
+    endRow = seqInfo("endRow")
+
+    ' 在 SEQ 區域內尋找 "Condition" 和 "Value" 欄位標題
+    Dim i As Long
+    Dim condCol As Long
+    Dim valueCol As Long
+    condCol = 0
+    valueCol = 0
+
+    For i = startRow To endRow
+        Dim lastCol As Long
+        lastCol = ws.Cells(i, ws.Columns.Count).End(xlToLeft).Column
+
+        Dim col As Long
+        For col = 1 To lastCol
+            Dim cellVal As String
+            cellVal = Trim(ws.Cells(i, col).Value)
+
+            If cellVal = "Condition" Then
+                condCol = col
+            ElseIf cellVal = "Value" And condCol > 0 Then
+                valueCol = col
+
+                ' 找到參數表，開始提取參數
+                Dim paramRow As Long
+                For paramRow = i + 1 To endRow
+                    Dim paramName As String
+                    Dim paramValue As Variant
+
+                    paramName = Trim(ws.Cells(paramRow, condCol).Value)
+                    paramValue = ws.Cells(paramRow, valueCol).Value
+
+                    ' 停止條件：遇到空行或 S/N 行
+                    If paramName = "" Or paramName = "S/N" Then
+                        Exit For
+                    End If
+
+                    ' 儲存參數
+                    params(paramName) = paramValue
+                Next paramRow
+
+                ' 找到參數表後即可退出
+                GoTo ParamsFound
+            End If
+        Next col
+    Next i
+
+ParamsFound:
+    Set ExtractParametersFromSEQ = params
+End Function
+
+' ========== 識別 SEQ 區域的讀值欄位 ==========
+Function IdentifyReadingColumnsFromSEQ(ws As Worksheet, seqInfo As Object) As Collection
+    Dim readingsList As New Collection
+
+    Dim startRow As Long
+    Dim endRow As Long
+    startRow = seqInfo("titleRow")
+    endRow = seqInfo("endRow")
+
+    ' 尋找 S/N 行
+    Dim i As Long
+    For i = startRow To endRow
+        Dim lastCol As Long
+        lastCol = ws.Cells(i, ws.Columns.Count).End(xlToLeft).Column
+
+        Dim col As Long
+        For col = 1 To lastCol
+            Dim cellVal As String
+            cellVal = Trim(ws.Cells(i, col).Value)
+
+            If cellVal = "S/N" Then
+                ' 找到 S/N 行，開始識別讀值欄位
+                Dim readCol As Long
+                For readCol = col + 1 To lastCol
+                    Dim headerVal As String
+                    headerVal = Trim(ws.Cells(i, readCol).Value)
+
+                    ' 排除特殊欄位
+                    If headerVal <> "" And _
+                       UCase(headerVal) <> "MAXIMUM" And _
+                       UCase(headerVal) <> "MINIMUM" Then
+
+                        ' 建立讀值資訊
+                        Dim readingInfo As Object
+                        Set readingInfo = CreateObject("Scripting.Dictionary")
+                        readingInfo("name") = headerVal
+                        readingInfo("colIndex") = readCol
+
+                        readingsList.Add readingInfo
+
+                        Debug.Print "    找到讀值欄位: " & headerVal & " (欄 " & readCol & ")"
+                    End If
+                Next readCol
+
+                ' 找到 S/N 行後即可退出
+                GoTo ReadingsFound
+            End If
+        Next col
+    Next i
+
+ReadingsFound:
+    Set IdentifyReadingColumnsFromSEQ = readingsList
+End Function
+
+' ========== 從 SEQ 區域提取讀值數據 ==========
+Function ExtractReadingDataFromSEQ(ws As Worksheet, seqInfo As Object, colIndex As Long) As Collection
+    Dim readingData As New Collection
+
+    Dim startRow As Long
+    Dim endRow As Long
+    startRow = seqInfo("titleRow")
+    endRow = seqInfo("endRow")
+
+    ' 找到 S/N 行
+    Dim snRow As Long
+    snRow = 0
+
+    Dim i As Long
+    For i = startRow To endRow
+        If Trim(ws.Cells(i, 1).Value) = "S/N" Then
+            snRow = i
+            Exit For
+        End If
+    Next i
+
+    If snRow = 0 Then
+        Set ExtractReadingDataFromSEQ = readingData
+        Exit Function
+    End If
+
+    ' 從 S/N 行的下一行開始提取數據
+    For i = snRow + 1 To endRow
+        Dim cellValue As Variant
+        cellValue = ws.Cells(i, colIndex).Value
+
+        ' 排除空值、Maximum、Minimum
+        If Not IsEmpty(cellValue) And _
+           UCase(CStr(cellValue)) <> "MAXIMUM" And _
+           UCase(CStr(cellValue)) <> "MINIMUM" Then
+
+            ' 清理數值（移除 ?? 標記）
+            Dim cleanValue As String
+            cleanValue = CleanNumericValueForChart(CStr(cellValue))
+
+            If IsNumeric(cleanValue) And cleanValue <> "" Then
+                readingData.Add CDbl(cleanValue)
+            End If
+        End If
+    Next i
+
+    Set ExtractReadingDataFromSEQ = readingData
+End Function
+
+' ========== 清理數值（移除 ?? 標記）==========
+Function CleanNumericValueForChart(value As String) As String
+    ' 移除 ?? 標記，保留數字
+    Dim cleaned As String
+    cleaned = Replace(value, "?", "")
+    cleaned = Trim(cleaned)
+    CleanNumericValueForChart = cleaned
+End Function
+
+' ========== 建立單個分布圖資料區塊 ==========
+Sub CreateOneDistributionDataBlock(ws As Worksheet, params As Object, readingInfo As Object, _
+                                   readingData As Collection, startRow As Long, startCol As Long)
+    ' 布局：[參數表 2 欄] [數據表 2 欄] [圖表空間預留]
+
+    Dim paramCol As Long
+    Dim dataCol As Long
+    paramCol = startCol          ' 參數表起始欄
+    dataCol = startCol + 2       ' 數據表起始欄（參數表後 2 欄）
+
+    ' ========== 1. 寫入參數表（2 欄）==========
+    Call WriteParameterTableForChart(ws, params, readingInfo("name"), startRow, paramCol)
+
+    ' ========== 2. 計算頻率並寫入數據表（2 欄）==========
+    Call WriteDataTableForChart(ws, readingData, readingInfo("name"), startRow, dataCol)
+
+    ' ========== 3. 標註圖表預留空間 ==========
+    Dim chartCol As Long
+    chartCol = dataCol + 2  ' 數據表後 2 欄開始
+
+    ws.Cells(startRow, chartCol).Value = "[圖表預留空間]"
+    ws.Cells(startRow, chartCol).Font.Italic = True
+    ws.Cells(startRow, chartCol).Font.Color = RGB(128, 128, 128)
+
+    ' 設定欄寬
+    ws.Columns(paramCol).ColumnWidth = 15
+    ws.Columns(paramCol + 1).ColumnWidth = 12
+    ws.Columns(dataCol).ColumnWidth = 12
+    ws.Columns(dataCol + 1).ColumnWidth = 10
+End Sub
+
+' ========== 寫入參數表 ==========
+Sub WriteParameterTableForChart(ws As Worksheet, params As Object, readingName As String, _
+                                startRow As Long, startCol As Long)
+    ' 表頭
+    ws.Cells(startRow, startCol).Value = "Condition"
+    ws.Cells(startRow, startCol + 1).Value = "Value"
+
+    ' 表頭格式（橘色底）
+    With ws.Range(ws.Cells(startRow, startCol), ws.Cells(startRow, startCol + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 224, 178)
+        .HorizontalAlignment = xlCenter
+    End With
+
+    ' 寫入參數
+    Dim currentRow As Long
+    currentRow = startRow + 1
+
+    Dim paramName As Variant
+    For Each paramName In params.Keys
+        ws.Cells(currentRow, startCol).Value = paramName
+        ws.Cells(currentRow, startCol + 1).Value = params(paramName)
+
+        ' Max 參數標紅色，Min 參數標綠色
+        If InStr(UCase(CStr(paramName)), "MAX") > 0 Then
+            ws.Cells(currentRow, startCol).Font.Color = RGB(255, 0, 0)
+            ws.Cells(currentRow, startCol).Font.Bold = True
+            ws.Cells(currentRow, startCol + 1).Font.Color = RGB(255, 0, 0)
+            ws.Cells(currentRow, startCol + 1).Font.Bold = True
+        ElseIf InStr(UCase(CStr(paramName)), "MIN") > 0 Then
+            ws.Cells(currentRow, startCol).Font.Color = RGB(0, 176, 80)
+            ws.Cells(currentRow, startCol).Font.Bold = True
+            ws.Cells(currentRow, startCol + 1).Font.Color = RGB(0, 176, 80)
+            ws.Cells(currentRow, startCol + 1).Font.Bold = True
+        End If
+
+        ' 淺黃色背景
+        ws.Cells(currentRow, startCol).Interior.Color = RGB(255, 249, 196)
+        ws.Cells(currentRow, startCol + 1).Interior.Color = RGB(255, 249, 196)
+
+        currentRow = currentRow + 1
+    Next paramName
+End Sub
+
+' ========== 寫入數據表（計算頻率）==========
+Sub WriteDataTableForChart(ws As Worksheet, readingData As Collection, readingName As String, _
+                           startRow As Long, startCol As Long)
+    ' 表頭
+    ws.Cells(startRow, startCol).Value = readingName
+    ws.Cells(startRow, startCol + 1).Value = "Frequency"
+
+    ' 表頭格式（藍色底 + 白字）
+    With ws.Range(ws.Cells(startRow, startCol), ws.Cells(startRow, startCol + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(68, 114, 196)
+        .Font.Color = RGB(255, 255, 255)
+        .HorizontalAlignment = xlCenter
+    End With
+
+    ' 計算頻率
+    Dim freqDict As Object
+    Set freqDict = CreateObject("Scripting.Dictionary")
+
+    Dim val As Variant
+    For Each val In readingData
+        Dim roundedVal As Double
+        roundedVal = RoundByValueRangeForChart(CDbl(val))
+
+        If freqDict.Exists(roundedVal) Then
+            freqDict(roundedVal) = freqDict(roundedVal) + 1
+        Else
+            freqDict.Add roundedVal, 1
+        End If
+    Next val
+
+    ' 排序（從小到大）
+    Dim sortedKeys() As Double
+    ReDim sortedKeys(0 To freqDict.Count - 1)
+
+    Dim idx As Long
+    idx = 0
+    Dim key As Variant
+    For Each key In freqDict.Keys
+        sortedKeys(idx) = CDbl(key)
+        idx = idx + 1
+    Next key
+
+    ' 簡單氣泡排序
+    Dim i As Long, j As Long
+    For i = 0 To UBound(sortedKeys) - 1
+        For j = i + 1 To UBound(sortedKeys)
+            If sortedKeys(i) > sortedKeys(j) Then
+                Dim temp As Double
+                temp = sortedKeys(i)
+                sortedKeys(i) = sortedKeys(j)
+                sortedKeys(j) = temp
+            End If
+        Next j
+    Next i
+
+    ' 寫入數據
+    Dim currentRow As Long
+    currentRow = startRow + 1
+
+    For i = 0 To UBound(sortedKeys)
+        ws.Cells(currentRow, startCol).Value = sortedKeys(i)
+        ws.Cells(currentRow, startCol + 1).Value = freqDict(sortedKeys(i))
+        currentRow = currentRow + 1
+    Next i
+End Sub
+
+' ========== 智能四捨五入 ==========
+Function RoundByValueRangeForChart(val As Double) As Double
+    ' >= 1: 保留 2 位小數
+    ' < 1: 保留 3 位小數
+    If Abs(val) >= 1 Then
+        RoundByValueRangeForChart = Round(val, 2)
+    Else
+        RoundByValueRangeForChart = Round(val, 3)
+    End If
+End Function

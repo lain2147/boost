@@ -1,0 +1,709 @@
+Option Explicit
+
+' ============================================================
+' Distribution Chart Generator - From Excel Report
+' Version: 2.0
+' Date: 2025-12-07
+'
+' Description:
+'   Read data from existing Excel test report and generate
+'   distribution charts in a new worksheet
+'
+' Usage:
+'   1. Run GenerateDistributionChartsFromExcel
+'   2. Select an Excel test report file
+'   3. Wait for processing
+'   4. Check "Distribution Charts" worksheet
+' ============================================================
+
+' ========== Main Entry Point ==========
+
+Sub GenerateDistributionChartsFromExcel()
+    Dim filePath As Variant
+    Dim wb As Workbook
+    Dim sourceWs As Worksheet
+    Dim chartWs As Worksheet
+    Dim startTime As Double
+
+    startTime = Timer
+
+    ' Select Excel file
+    filePath = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm", , "Select Test Report Excel File")
+
+    If filePath = False Then Exit Sub
+
+    ' Performance optimization
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.DisplayStatusBar = True
+
+    On Error GoTo ErrorHandler
+
+    ' Open workbook
+    Application.StatusBar = "Opening file..."
+    Set wb = Workbooks.Open(filePath)
+    Set sourceWs = wb.Worksheets(1)
+
+    ' Create or clear "Distribution Charts" worksheet
+    Application.StatusBar = "Creating Distribution Charts worksheet..."
+    On Error Resume Next
+    Set chartWs = wb.Worksheets("Distribution Charts")
+    On Error GoTo ErrorHandler
+
+    If chartWs Is Nothing Then
+        Set chartWs = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        chartWs.Name = "Distribution Charts"
+    Else
+        chartWs.Cells.Clear
+        On Error Resume Next
+        chartWs.ChartObjects.Delete
+        On Error GoTo ErrorHandler
+    End If
+
+    ' Scan all SEQ areas
+    Application.StatusBar = "Scanning SEQ areas..."
+    Dim seqList As Collection
+    Set seqList = ScanAllSEQFromSheet(sourceWs)
+
+    If seqList.Count = 0 Then
+        MsgBox "No SEQ areas found in the worksheet!", vbExclamation, "Warning"
+        GoTo CleanupAndExit
+    End If
+
+    Debug.Print "Found " & seqList.Count & " SEQ area(s)"
+
+    ' Generate distribution charts
+    Application.StatusBar = "Generating distribution charts..."
+    Call CreateAllDistributionCharts(sourceWs, chartWs, seqList)
+
+    ' Final formatting
+    chartWs.Cells.Font.Name = "Calibri"
+    chartWs.Cells.Font.Size = 10
+    chartWs.Activate
+    chartWs.Range("A1").Select
+
+    ' Save and show completion message
+    wb.Save
+
+    Dim elapsedTime As Double
+    elapsedTime = Timer - startTime
+
+    MsgBox "Distribution charts generated successfully!" & vbCrLf & _
+           "Processing time: " & Format(elapsedTime, "0.00") & " seconds" & vbCrLf & _
+           "Total SEQ areas: " & seqList.Count, _
+           vbInformation, "Complete"
+
+CleanupAndExit:
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.StatusBar = False
+    Exit Sub
+
+ErrorHandler:
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.StatusBar = False
+    MsgBox "Error: " & Err.Description, vbCritical, "Error"
+End Sub
+
+' ========== SEQ Area Scanning ==========
+
+Function ScanAllSEQFromSheet(ws As Worksheet) As Collection
+    Dim seqList As New Collection
+    Dim cell As Range
+    Dim seqInfo As Object
+    Dim lastRow As Long, lastCol As Long
+
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ' Scan for SEQ titles
+    For Each cell In ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+        If InStr(1, cell.Value, "SEQ.", vbTextCompare) > 0 And _
+           InStr(1, cell.Value, ":", vbTextCompare) > 0 Then
+
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = Trim(cell.Value)
+            seqInfo("titleRow") = cell.Row
+            seqInfo("titleCol") = cell.Column
+
+            ' Find S/N row in this SEQ area
+            Dim snRow As Long
+            snRow = FindSNRow(ws, cell.Row, cell.Column)
+
+            If snRow > 0 Then
+                seqInfo("snRow") = snRow
+                seqInfo("dataStartRow") = snRow + 1
+                seqInfo("dataEndRow") = FindDataEndRow(ws, snRow, cell.Column)
+
+                seqList.Add seqInfo
+
+                Debug.Print "Found SEQ: " & seqInfo("title") & " at Row " & cell.Row
+            End If
+        End If
+    Next cell
+
+    Set ScanAllSEQFromSheet = seqList
+End Function
+
+Function FindSNRow(ws As Worksheet, startRow As Long, startCol As Long) As Long
+    Dim i As Long
+    Dim searchRange As Long
+
+    searchRange = startRow + 30
+    If searchRange > ws.Rows.Count Then searchRange = ws.Rows.Count
+
+    For i = startRow To searchRange
+        If Trim(ws.Cells(i, startCol).Value) = "S/N" Then
+            FindSNRow = i
+            Exit Function
+        End If
+    Next i
+
+    FindSNRow = 0
+End Function
+
+Function FindDataEndRow(ws As Worksheet, snRow As Long, startCol As Long) As Long
+    Dim i As Long
+    Dim cellValue As String
+
+    For i = snRow + 1 To snRow + 200
+        cellValue = Trim(ws.Cells(i, startCol).Value)
+        If cellValue = "Maximum" Or cellValue = "Minimum" Or cellValue = "" Then
+            FindDataEndRow = i - 1
+            Exit Function
+        End If
+    Next i
+
+    FindDataEndRow = snRow + 100
+End Function
+
+' ========== Create All Distribution Charts ==========
+
+Sub CreateAllDistributionCharts(sourceWs As Worksheet, chartWs As Worksheet, seqList As Collection)
+    Dim seqInfo As Object
+    Dim seqIndex As Long
+    Dim currentCol As Long
+    Dim blockWidth As Long
+
+    currentCol = 1
+    blockWidth = 28  ' Each SEQ block uses 28 columns (A-AB)
+
+    For seqIndex = 1 To seqList.Count
+        Set seqInfo = seqList(seqIndex)
+
+        Debug.Print vbCrLf & "Processing SEQ: " & seqInfo("title")
+
+        ' Create charts for this SEQ
+        Call CreateChartsForOneSEQ(sourceWs, chartWs, seqInfo, currentCol)
+
+        ' Move to next SEQ column position
+        currentCol = currentCol + blockWidth + 2  ' +2 for spacing
+    Next seqIndex
+End Sub
+
+Sub CreateChartsForOneSEQ(sourceWs As Worksheet, chartWs As Worksheet, seqInfo As Object, startCol As Long)
+    ' Write SEQ title
+    chartWs.Cells(1, startCol).Value = seqInfo("title")
+    chartWs.Range(chartWs.Cells(1, startCol), chartWs.Cells(1, startCol + 27)).Merge
+    With chartWs.Cells(1, startCol)
+        .Font.Bold = True
+        .Font.Size = 12
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    chartWs.Rows(1).RowHeight = 30
+
+    ' Extract parameters
+    Dim params As Object
+    Set params = ExtractSEQParameters(sourceWs, seqInfo)
+
+    ' Identify reading columns
+    Dim readingCols As Collection
+    Set readingCols = IdentifyReadingColumns(sourceWs, seqInfo)
+
+    Debug.Print "Found " & readingCols.Count & " reading column(s)"
+
+    ' Generate chart for each reading column
+    Dim currentRow As Long
+    Dim readingInfo As Object
+    Dim colIndex As Long
+
+    currentRow = 3  ' Start from row 3 (row 1 = SEQ title, row 2 = spacing)
+
+    For colIndex = 1 To readingCols.Count
+        Set readingInfo = readingCols(colIndex)
+
+        Debug.Print "  Processing reading: " & readingInfo("name")
+
+        Call CreateOneDistributionBlock(sourceWs, chartWs, seqInfo, readingInfo, params, currentRow, startCol)
+
+        currentRow = currentRow + 20  ' Each block uses ~20 rows
+    Next colIndex
+End Sub
+
+' ========== Extract Parameters ==========
+
+Function ExtractSEQParameters(ws As Worksheet, seqInfo As Object) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+
+    Dim titleRow As Long, titleCol As Long, snRow As Long
+    titleRow = seqInfo("titleRow")
+    titleCol = seqInfo("titleCol")
+    snRow = seqInfo("snRow")
+
+    ' Scan parameter area (from title row to S/N row)
+    Dim i As Long, j As Long
+    Dim conditionText As String, valueText As String
+
+    For i = titleRow + 1 To snRow - 1
+        For j = titleCol To titleCol + 10
+            conditionText = Trim(ws.Cells(i, j).Value)
+
+            If conditionText <> "" And conditionText <> "Condition" Then
+                ' Check if next column has value
+                valueText = Trim(ws.Cells(i, j + 1).Value)
+
+                If valueText <> "" And valueText <> "Value" And IsNumeric(valueText) Then
+                    params(conditionText) = CDbl(valueText)
+                    Debug.Print "    Param: " & conditionText & " = " & valueText
+                End If
+            End If
+        Next j
+    Next i
+
+    Set ExtractSEQParameters = params
+End Function
+
+' ========== Identify Reading Columns ==========
+
+Function IdentifyReadingColumns(ws As Worksheet, seqInfo As Object) As Collection
+    Dim readingCols As New Collection
+    Dim snRow As Long, snCol As Long
+    Dim col As Long
+    Dim cellValue As String
+    Dim readingInfo As Object
+
+    snRow = seqInfo("snRow")
+    snCol = seqInfo("titleCol")
+
+    ' Scan columns from S/N column + 1
+    For col = snCol + 1 To snCol + 20
+        cellValue = Trim(ws.Cells(snRow, col).Value)
+
+        If cellValue <> "" And cellValue <> "Maximum" And cellValue <> "Minimum" Then
+            Set readingInfo = CreateObject("Scripting.Dictionary")
+            readingInfo("name") = cellValue
+            readingInfo("colIndex") = col
+            readingCols.Add readingInfo
+        End If
+    Next col
+
+    Set IdentifyReadingColumns = readingCols
+End Function
+
+' ========== Create One Distribution Block ==========
+
+Sub CreateOneDistributionBlock(sourceWs As Worksheet, _
+                               chartWs As Worksheet, _
+                               seqInfo As Object, _
+                               readingInfo As Object, _
+                               params As Object, _
+                               startRow As Long, _
+                               startCol As Long)
+
+    ' Extract reading data
+    Dim readingData As Collection
+    Set readingData = ExtractReadingData(sourceWs, seqInfo, readingInfo("colIndex"))
+
+    If readingData.Count = 0 Then
+        Debug.Print "    No data found, skipping..."
+        Exit Sub
+    End If
+
+    ' Calculate frequency with spec
+    Dim freqData As Collection
+    Set freqData = CalculateFrequencyWithSpec(readingData, params, readingInfo("name"))
+
+    ' Layout: [Parameters 2 cols] [Data 2 cols] [Chart]
+    ' Write parameter table (2 columns)
+    Call WriteParameterTable(chartWs, params, readingInfo("name"), startRow, startCol)
+
+    ' Write data table (2 columns, after parameters)
+    Call WriteDataTable(chartWs, freqData, readingInfo("name"), startRow, startCol + 2)
+
+    ' Create chart (after data table)
+    Call CreateDistributionChart(chartWs, freqData, readingInfo("name"), startRow, startCol + 4)
+End Sub
+
+' ========== Extract Reading Data ==========
+
+Function ExtractReadingData(ws As Worksheet, seqInfo As Object, colIndex As Long) As Collection
+    Dim readingData As New Collection
+    Dim startRow As Long, endRow As Long
+    Dim i As Long
+    Dim cellValue As String
+    Dim numValue As Double
+
+    startRow = seqInfo("dataStartRow")
+    endRow = seqInfo("dataEndRow")
+
+    For i = startRow To endRow
+        cellValue = Trim(ws.Cells(i, colIndex).Value)
+
+        If cellValue <> "" Then
+            ' Clean ?? markers
+            cellValue = Replace(cellValue, "?", "")
+            cellValue = Trim(cellValue)
+
+            If IsNumeric(cellValue) Then
+                numValue = CDbl(cellValue)
+                readingData.Add numValue
+            End If
+        End If
+    Next i
+
+    Set ExtractReadingData = readingData
+End Function
+
+' ========== Calculate Frequency With Spec ==========
+
+Function CalculateFrequencyWithSpec(values As Collection, params As Object, readingName As String) As Collection
+    Dim freqData As New Collection
+    Dim freqDict As Object
+    Set freqDict = CreateObject("Scripting.Dictionary")
+
+    ' Round and count frequency
+    Dim val As Variant
+    Dim roundedVal As Double
+
+    For Each val In values
+        roundedVal = RoundByValueRange(CDbl(val))
+
+        If freqDict.Exists(roundedVal) Then
+            freqDict(roundedVal) = freqDict(roundedVal) + 1
+        Else
+            freqDict.Add roundedVal, 1
+        End If
+    Next val
+
+    ' Find matching Spec Max/Min
+    Dim baseName As String
+    baseName = ExtractBaseName(readingName)
+
+    Dim specMax As Variant, specMin As Variant
+    specMax = FindSpecValue(params, baseName, "Max")
+    specMin = FindSpecValue(params, baseName, "Min")
+
+    ' Build complete data with Spec markers
+    Dim allData As Object
+    Set allData = CreateObject("Scripting.Dictionary")
+
+    ' Add frequency data
+    Dim key As Variant
+    For Each key In freqDict.Keys
+        allData.Add CDbl(key), Array(CDbl(key), freqDict(key), "normal", vbBlack)
+    Next key
+
+    ' Add Spec Max
+    If Not IsEmpty(specMax) And specMax <> "" Then
+        Dim maxKey As Double
+        maxKey = CDbl(specMax)
+        If Not allData.Exists(maxKey) Then
+            allData.Add maxKey, Array(maxKey, Empty, "max", RGB(255, 0, 0))
+        End If
+    End If
+
+    ' Add Spec Min
+    If Not IsEmpty(specMin) And specMin <> "" Then
+        Dim minKey As Double
+        minKey = CDbl(specMin)
+        If Not allData.Exists(minKey) Then
+            allData.Add minKey, Array(minKey, Empty, "min", RGB(0, 176, 80))
+        End If
+    End If
+
+    ' Sort from small to large
+    Dim sortedKeys() As Double
+    Dim sortedData As New Collection
+    ReDim sortedKeys(1 To allData.Count)
+
+    Dim i As Long
+    i = 1
+    For Each key In allData.Keys
+        sortedKeys(i) = CDbl(key)
+        i = i + 1
+    Next key
+
+    ' Bubble sort
+    Dim j As Long
+    Dim temp As Double
+    For i = 1 To UBound(sortedKeys) - 1
+        For j = i + 1 To UBound(sortedKeys)
+            If sortedKeys(i) > sortedKeys(j) Then
+                temp = sortedKeys(i)
+                sortedKeys(i) = sortedKeys(j)
+                sortedKeys(j) = temp
+            End If
+        Next j
+    Next i
+
+    ' Build sorted collection
+    For i = 1 To UBound(sortedKeys)
+        Dim dataItem As Object
+        Set dataItem = CreateObject("Scripting.Dictionary")
+
+        Dim dataArray As Variant
+        dataArray = allData(sortedKeys(i))
+
+        dataItem("value") = dataArray(0)
+        dataItem("frequency") = dataArray(1)
+        dataItem("type") = dataArray(2)
+        dataItem("color") = dataArray(3)
+
+        sortedData.Add dataItem
+    Next i
+
+    Set CalculateFrequencyWithSpec = sortedData
+End Function
+
+' ========== Extract Base Name ==========
+
+Function ExtractBaseName(readingName As String) As String
+    Dim cleanName As String
+    cleanName = readingName
+
+    ' Remove prefix like "5.3_"
+    If InStr(cleanName, "_") > 0 Then
+        cleanName = Mid(cleanName, InStr(cleanName, "_") + 1)
+    End If
+
+    ' Remove "Read" suffix
+    cleanName = Replace(cleanName, "Read", "")
+
+    ' Remove numbers at the end
+    Dim i As Integer
+    For i = Len(cleanName) To 1 Step -1
+        If Not IsNumeric(Mid(cleanName, i, 1)) Then
+            cleanName = Left(cleanName, i)
+            Exit For
+        End If
+    Next i
+
+    ExtractBaseName = Trim(cleanName)
+End Function
+
+' ========== Find Spec Value ==========
+
+Function FindSpecValue(params As Object, baseName As String, specType As String) As Variant
+    Dim searchKey As String
+    searchKey = baseName & specType
+
+    If params.Exists(searchKey) Then
+        FindSpecValue = params(searchKey)
+    Else
+        FindSpecValue = Empty
+    End If
+End Function
+
+' ========== Round By Value Range ==========
+
+Function RoundByValueRange(val As Double) As Double
+    If Abs(val) >= 1 Then
+        RoundByValueRange = Round(val, 2)
+    Else
+        RoundByValueRange = Round(val, 3)
+    End If
+End Function
+
+' ========== Write Parameter Table ==========
+
+Sub WriteParameterTable(ws As Worksheet, params As Object, readingName As String, startRow As Long, startCol As Long)
+    Dim row As Long
+    row = startRow
+
+    ' Header
+    ws.Cells(row, startCol).Value = "Condition"
+    ws.Cells(row, startCol + 1).Value = "Value"
+    With ws.Range(ws.Cells(row, startCol), ws.Cells(row, startCol + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 224, 178)
+        .HorizontalAlignment = xlCenter
+    End With
+
+    ws.Columns(startCol).ColumnWidth = 12
+    ws.Columns(startCol + 1).ColumnWidth = 10
+
+    row = row + 1
+
+    ' Write parameters
+    Dim key As Variant
+    For Each key In params.Keys
+        ws.Cells(row, startCol).Value = key
+        ws.Cells(row, startCol + 1).Value = params(key)
+
+        ' Color Max/Min
+        If InStr(1, key, "Max", vbTextCompare) > 0 Then
+            ws.Cells(row, startCol).Font.Color = RGB(255, 0, 0)
+            ws.Cells(row, startCol + 1).Font.Color = RGB(255, 0, 0)
+            ws.Cells(row, startCol).Font.Bold = True
+            ws.Cells(row, startCol + 1).Font.Bold = True
+        ElseIf InStr(1, key, "Min", vbTextCompare) > 0 Then
+            ws.Cells(row, startCol).Font.Color = RGB(0, 176, 80)
+            ws.Cells(row, startCol + 1).Font.Color = RGB(0, 176, 80)
+            ws.Cells(row, startCol).Font.Bold = True
+            ws.Cells(row, startCol + 1).Font.Bold = True
+        End If
+
+        With ws.Range(ws.Cells(row, startCol), ws.Cells(row, startCol + 1))
+            .Interior.Color = RGB(255, 249, 196)
+            .HorizontalAlignment = xlCenter
+        End With
+
+        row = row + 1
+    Next key
+End Sub
+
+' ========== Write Data Table ==========
+
+Sub WriteDataTable(ws As Worksheet, freqData As Collection, readingName As String, startRow As Long, startCol As Long)
+    Dim row As Long
+    row = startRow
+
+    ' Header
+    ws.Cells(row, startCol).Value = readingName
+    ws.Cells(row, startCol + 1).Value = "Frequency"
+    With ws.Range(ws.Cells(row, startCol), ws.Cells(row, startCol + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(68, 114, 196)
+        .Font.Color = RGB(255, 255, 255)
+        .HorizontalAlignment = xlCenter
+    End With
+
+    ws.Columns(startCol).ColumnWidth = 12
+    ws.Columns(startCol + 1).ColumnWidth = 10
+
+    row = row + 1
+
+    ' Write data
+    Dim dataItem As Object
+    For Each dataItem In freqData
+        Dim displayValue As String
+
+        If dataItem("type") = "max" Then
+            displayValue = dataItem("value") & "_MAX"
+        ElseIf dataItem("type") = "min" Then
+            displayValue = dataItem("value") & "_Min"
+        Else
+            displayValue = dataItem("value")
+        End If
+
+        ws.Cells(row, startCol).Value = displayValue
+        ws.Cells(row, startCol).Font.Color = dataItem("color")
+
+        If dataItem("type") = "max" Or dataItem("type") = "min" Then
+            ws.Cells(row, startCol).Font.Bold = True
+            ' Frequency empty for spec
+        Else
+            ws.Cells(row, startCol + 1).Value = dataItem("frequency")
+        End If
+
+        ws.Cells(row, startCol).HorizontalAlignment = xlCenter
+        ws.Cells(row, startCol + 1).HorizontalAlignment = xlCenter
+
+        row = row + 1
+    Next dataItem
+End Sub
+
+' ========== Create Distribution Chart ==========
+
+Sub CreateDistributionChart(ws As Worksheet, freqData As Collection, readingName As String, startRow As Long, startCol As Long)
+    ' Prepare data for chart
+    Dim xValues() As Variant
+    Dim yValues() As Variant
+    Dim dataCount As Long
+
+    dataCount = freqData.Count
+    ReDim xValues(1 To dataCount)
+    ReDim yValues(1 To dataCount)
+
+    Dim i As Long
+    Dim dataItem As Object
+    i = 1
+
+    For Each dataItem In freqData
+        Dim displayValue As String
+
+        If dataItem("type") = "max" Then
+            displayValue = dataItem("value") & "_MAX"
+        ElseIf dataItem("type") = "min" Then
+            displayValue = dataItem("value") & "_Min"
+        Else
+            displayValue = dataItem("value")
+        End If
+
+        xValues(i) = displayValue
+
+        If IsEmpty(dataItem("frequency")) Then
+            yValues(i) = 0
+        Else
+            yValues(i) = dataItem("frequency")
+        End If
+
+        i = i + 1
+    Next dataItem
+
+    ' Create chart
+    Dim topLeftCell As Range
+    Set topLeftCell = ws.Cells(startRow, startCol)
+
+    Dim chartObj As ChartObject
+    Set chartObj = ws.ChartObjects.Add( _
+        Left:=topLeftCell.Left, _
+        Top:=topLeftCell.Top, _
+        Width:=450, _
+        Height:=280)
+
+    With chartObj.Chart
+        .ChartType = xlColumnClustered
+
+        ' Clear default series
+        Do While .SeriesCollection.Count > 0
+            .SeriesCollection(1).Delete
+        Loop
+
+        ' Add series
+        Dim s As Series
+        Set s = .SeriesCollection.NewSeries
+        s.Name = readingName
+        s.XValues = xValues
+        s.Values = yValues
+        s.Format.Fill.ForeColor.RGB = RGB(68, 114, 196)
+
+        ' Chart title
+        .HasTitle = True
+        .ChartTitle.Text = readingName
+        .ChartTitle.Font.Size = 12
+        .ChartTitle.Font.Bold = True
+
+        ' Y axis
+        With .Axes(xlValue)
+            .HasTitle = True
+            .AxisTitle.Text = "Frequency"
+            .MinimumScale = 0
+            .MajorUnit = 1
+            .TickLabels.NumberFormat = "0"
+        End With
+
+        ' X axis
+        .Axes(xlCategory).HasTitle = False
+
+        ' Legend
+        .HasLegend = False
+    End With
+End Sub
