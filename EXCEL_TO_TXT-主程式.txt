@@ -1,0 +1,4719 @@
+Option Explicit
+
+' Main function to import and parse Turn On, Hold Up, Short Circuit, Combine, OLP, Dynamic and Input/Output (Iin<, Pin<) test data
+' Multi-file import support: Select multiple TXT files and they will be automatically merged into one large dataset for processing
+Sub ImportTurnOnTestReport()
+    Dim filePathArray As Variant
+    Dim fileContent As String
+    Dim lines() As String
+    Dim i As Long
+    Dim startTime As Double
+
+    startTime = Timer  ' Start timing
+
+    ' Multi-file selection support (MultiSelect:=True)
+    filePathArray = Application.GetOpenFilename("Text Files (*.txt), *.txt", , "Select Test Report File(s) - Multiple selection enabled", , MultiSelect:=True)
+
+    ' Check if user cancelled selection
+    If Not IsArray(filePathArray) Then Exit Sub
+
+    ' Display number of selected files
+    Dim fileCount As Long
+    fileCount = UBound(filePathArray) - LBound(filePathArray) + 1
+    Debug.Print "Selected " & fileCount & " file(s)"
+
+    ' ========== Performance Optimization Settings ==========
+    Application.ScreenUpdating = False      ' Disable screen updating (50-70% speed boost)
+    Application.Calculation = xlCalculationManual  ' Manual calculation mode
+    Application.EnableEvents = False        ' Disable event triggers
+    Application.DisplayStatusBar = True     ' Enable status bar for progress updates
+
+    On Error GoTo ErrorHandler  ' Error handling
+
+    ' Status: Reading files
+    Application.StatusBar = "Reading " & fileCount & " file(s)..."
+
+    ' If single file, read directly
+    If fileCount = 1 Then
+        fileContent = ReadTextFile(CStr(filePathArray(LBound(filePathArray))))
+    Else
+        ' If multiple files, merge content
+        fileContent = MergeMultipleFiles(filePathArray)
+    End If
+
+    If fileContent = "" Then
+        Application.StatusBar = False
+        MsgBox "Failed to read file(s)!", vbCritical, "Error"
+        GoTo CleanupAndExit
+    End If
+
+    ' Status: Parsing data
+    Application.StatusBar = "Parsing test data..."
+    lines = Split(fileContent, vbCrLf)
+
+    Dim modelName As String
+    Dim customerName As String
+    Dim inspectorName As String
+    Dim testDate As String
+    Dim unitCount As Long
+
+    ExtractHeaderInfo lines, modelName, customerName, inspectorName, testDate, unitCount
+    Debug.Print "Unit count detected: " & unitCount
+
+    ' Status: Creating workbook
+    Application.StatusBar = "Creating new workbook..."
+    Dim newWb As Workbook
+    Set newWb = Workbooks.Add
+
+    Application.DisplayAlerts = False
+    Do While newWb.Sheets.count > 1
+        newWb.Sheets(newWb.Sheets.count).Delete
+    Loop
+    Application.DisplayAlerts = True
+
+    Dim ws As Worksheet
+    Set ws = newWb.Sheets(1)
+     ' Remove info section
+    ' CreateSummarySectionInSheet ws, customerName, inspectorName, testDate, unitCount
+
+    ' Status: Finding test sequences
+    Application.StatusBar = "Finding test sequences..."
+    Dim seqList As Object
+    Set seqList = FindAllSequences(lines)
+    Debug.Print "Found " & seqList.count & " test sequence(s)"
+    ' Status: Creating Excel sections
+    Application.StatusBar = "Creating Excel sections..."
+    If seqList.count > 0 Then
+        CreateAllSectionsInSheet ws, seqList, lines, unitCount
+        
+        ' ===== ?s?W?G????????????u?@?? =====
+        Application.StatusBar = "Preparing distribution chart data..."
+        Call PrepareDistributionChartData(ActiveWorkbook, seqList)
+        ' ==========================================
+    End If
+
+
+    ' Status: Formatting worksheet
+    Application.StatusBar = "Formatting worksheet..."
+
+    ' ??A??X?u?@???W??]?P??W???@?P?^
+    Dim sheetName As String
+    Dim sheetParts() As String
+    Dim sheetPartCount As Integer
+    sheetPartCount = 0
+
+    ReDim sheetParts(0 To 3)
+
+    ' ??d Model Name
+    If IsValidFieldValue(modelName) Then
+        sheetParts(sheetPartCount) = Trim(modelName)
+        sheetPartCount = sheetPartCount + 1
+    End If
+
+    ' ??d Customer
+    If IsValidFieldValue(customerName) Then
+        sheetParts(sheetPartCount) = Trim(customerName)
+        sheetPartCount = sheetPartCount + 1
+    End If
+
+    ' ????M??q?u??]?t
+    sheetParts(sheetPartCount) = Trim(testDate)
+    sheetPartCount = sheetPartCount + 1
+    sheetParts(sheetPartCount) = CStr(unitCount)
+    sheetPartCount = sheetPartCount + 1
+
+    ' ??X?u?@???W??
+    ReDim Preserve sheetParts(0 To sheetPartCount - 1)
+    sheetName = Join(sheetParts, "_")
+    sheetName = CleanSheetName(sheetName)
+    ws.Name = sheetName
+
+    ws.Activate
+    ws.Range("A1").Select
+
+    ' Status: Saving file
+    Application.StatusBar = "Saving file..."
+    Dim savedPath As String
+    savedPath = SaveWithCustomName(newWb, modelName, customerName, testDate, unitCount)
+
+    ' Calculate total processing time
+    Dim elapsedTime As Double
+    elapsedTime = Timer - startTime
+    Debug.Print "Total processing time: " & Format(elapsedTime, "0.00") & " seconds"
+
+    ' Status: Complete
+    Application.StatusBar = "Processing complete!"
+
+    ' Display completion message
+    If savedPath <> "" Then
+        MsgBox "? Processing Complete!" & vbCrLf & vbCrLf & _
+               "Total Time: " & Format(elapsedTime, "0.00") & " seconds" & vbCrLf & _
+               "Saved to: " & vbCrLf & savedPath, vbInformation, "Complete"
+    Else
+        MsgBox "Processing completed, but file was not saved." & vbCrLf & _
+               "Total Time: " & Format(elapsedTime, "0.00") & " seconds", vbInformation, "Complete"
+    End If
+
+CleanupAndExit:
+    ' ========== Restore Excel Settings ==========
+    Application.StatusBar = False  ' Clear status bar
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.DisplayStatusBar = True
+    Exit Sub
+
+ErrorHandler:
+    Application.StatusBar = False  ' Clear status bar on error
+    MsgBox "Error occurred: " & Err.Description, vbCritical, "Error"
+    Resume CleanupAndExit
+End Sub
+
+' ========== ?????e??????]Input/Output ??G?h?P?_?^ ==========
+Function DetectInputOutputTypeFromData(lines() As String, startLine As Long) As String
+    ' ???????e?i?? Input/Output ?????P?_?]?@?????D????r?P?_???????^
+    ' ?u????GEff > Iin > Pin > General
+
+    Dim effMin As String, iinrmsMax As String, pinMax As String
+    effMin = "*"
+    iinrmsMax = "*"
+    pinMax = "*"
+
+    Dim i As Long, lineText As String, parts() As String
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+
+    ' ???????C??????m
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+
+    ' ???y?????A?M?? "Max Min Reading" ???D??
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+
+        ' ???]?t Max/Min/Reading ?????D??]?B???]?t = ???^
+        If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And _
+           InStr(lineText, "Reading") > 0 And InStr(lineText, "=") = 0 Then
+
+            ' ???? Eff Min?]?q?`?b?? 4 ??^
+            If i + 4 <= seqEndLine And InStr(lines(i + 4), "Eff") > 0 Then
+                Dim effLine As String
+                effLine = lines(i + 4)
+                parts = SplitLine(effLine)
+                Dim effIdx As Integer
+                For effIdx = 0 To UBound(parts)
+                    If parts(effIdx) = "Eff" Then
+                        If effIdx + 2 <= UBound(parts) Then
+                            effMin = parts(effIdx + 2)  ' Min ?b?? 3 ???m
+                        End If
+                        Exit For
+                    End If
+                Next effIdx
+            End If
+
+            ' ???? Iinrms Max?]?q?`?b?? 1 ??^
+            If i + 1 <= seqEndLine And InStr(lines(i + 1), "Iinrms") > 0 Then
+                Dim iinrmsLine As String
+                iinrmsLine = lines(i + 1)
+                parts = SplitLine(iinrmsLine)
+                Dim iinrmsIdx As Integer
+                For iinrmsIdx = 0 To UBound(parts)
+                    If parts(iinrmsIdx) = "Iinrms" Then
+                        If iinrmsIdx + 1 <= UBound(parts) Then
+                            iinrmsMax = parts(iinrmsIdx + 1)  ' Max ?b?? 2 ???m
+                        End If
+                        Exit For
+                    End If
+                Next iinrmsIdx
+            End If
+
+            ' ???? Pin Max?]?q?`?b?? 2 ??^
+            If i + 2 <= seqEndLine And InStr(lines(i + 2), "Pin") > 0 Then
+                Dim pinLine As String
+                pinLine = lines(i + 2)
+                parts = SplitLine(pinLine)
+                Dim pinIdx As Integer
+                For pinIdx = 0 To UBound(parts)
+                    If parts(pinIdx) = "Pin" Then
+                        If pinIdx + 1 <= UBound(parts) Then
+                            pinMax = parts(pinIdx + 1)  ' Max ?b?? 2 ???m
+                        End If
+                        Exit For
+                    End If
+                Next pinIdx
+            End If
+
+            Exit For
+        End If
+    Next i
+
+    ' ???u????P?_?GEff > Iin > Pin > General
+    If effMin <> "*" And effMin <> "" Then
+        DetectInputOutputTypeFromData = "InputOutput_Eff"
+    ElseIf iinrmsMax <> "*" And iinrmsMax <> "" Then
+        DetectInputOutputTypeFromData = "InputOutput_Iin"
+    ElseIf pinMax <> "*" And pinMax <> "" Then
+        DetectInputOutputTypeFromData = "InputOutput_Pin"
+    Else
+        DetectInputOutputTypeFromData = "InputOutput_General"
+    End If
+End Function
+
+' ======================================================
+' 函數: ExtractSeqNumber
+' 功能: 從 SEQ 標題中提取 SEQ 編號
+' 說明: 將 "SEQ.19: Input/Output Test (...)" 提取為 "SEQ.19"
+' 參數: seqTitle - SEQ 完整標題
+' 返回: SEQ 編號 (例如 "SEQ.19")
+' ======================================================
+Function ExtractSeqNumber(seqTitle As String) As String
+    Dim seqNum As String
+    seqNum = ""
+
+    ' 找到 "SEQ." 的位置
+    Dim seqPos As Long
+    seqPos = InStr(seqTitle, "SEQ.")
+
+    If seqPos > 0 Then
+        ' 找到冒號的位置
+        Dim colonPos As Long
+        colonPos = InStr(seqPos, seqTitle, ":")
+
+        If colonPos > 0 Then
+            ' 提取 SEQ.19 (從 SEQ. 開始到冒號之前)
+            seqNum = Trim(Mid(seqTitle, seqPos, colonPos - seqPos))
+        End If
+    End If
+
+    ExtractSeqNumber = seqNum
+End Function
+
+Function FindAllSequences(lines() As String) As Object
+    Dim seqList As Object
+    Set seqList = CreateObject("Scripting.Dictionary")
+    
+    Dim i As Long
+    Dim serialCount As Integer
+    Dim inFirstUnit As Boolean
+    Dim seqTitle As String
+    Dim seqStartLine As Long
+    Dim loadName As String
+    Dim seqType As String
+    
+    serialCount = 0
+    inFirstUnit = False
+    
+    For i = 0 To UBound(lines)
+        If InStr(lines(i), "Serial No") > 0 Then
+            serialCount = serialCount + 1
+            If serialCount = 1 Then
+                inFirstUnit = True
+            ElseIf serialCount = 2 Then
+                inFirstUnit = False
+                Exit For
+            End If
+        End If
+        
+        If inFirstUnit And InStr(lines(i), "Turn On") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            If InStr(UCase(lines(i)), "INRUSH") = 0 Then
+                seqTitle = Trim(lines(i))
+                seqStartLine = i
+                seqType = "TurnOn"
+                loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+                
+                Dim seqInfo As Object
+                Set seqInfo = CreateObject("Scripting.Dictionary")
+                seqInfo("title") = seqTitle
+                seqInfo("startLine") = seqStartLine
+                seqInfo("loadName") = loadName
+                seqInfo("type") = seqType
+                Set seqInfo("params") = ExtractTurnOnParams(lines, seqStartLine, loadName)
+                seqList.Add seqList.count, seqInfo
+            End If
+        End If
+        
+        If inFirstUnit And InStr(lines(i), "Hold Up") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            seqType = "HoldUp"
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+            
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractHoldUpParams(lines, seqStartLine, loadName)
+            seqList.Add seqList.count, seqInfo
+        End If
+        
+        If inFirstUnit And InStr(lines(i), "Short Circuit") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            seqType = "ShortCircuit"
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+            
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractShortCircuitParams(lines, seqStartLine, loadName)
+            seqList.Add seqList.count, seqInfo
+        End If
+        
+        If inFirstUnit And InStr(lines(i), "Combine") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            seqType = "Combine"
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+            
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractCombineParams(lines, seqStartLine, loadName)
+            seqList.Add seqList.count, seqInfo
+        End If
+        
+        If inFirstUnit And InStr(lines(i), "OLP") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            seqType = "OLP"
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+            
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractOLPParams(lines, seqStartLine, loadName)
+            seqList.Add seqList.count, seqInfo
+        End If
+        
+        If inFirstUnit And InStr(lines(i), "Dynamic") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            seqType = "Dynamic"
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+            
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractDynamicParams(lines, seqStartLine, loadName)
+            seqList.Add seqList.count, seqInfo
+        End If
+        
+        ' Load Regulation Test: ?e?P??t?]?? "Load Regulation"?B"LoadRegulation"?B"Load regulation" ????Ρ^
+        ' ???n??? "Combine Regulation Test"?]???? Combine ???B?z?^
+        Dim isLoadReg As Boolean
+        isLoadReg = False
+        If inFirstUnit And InStr(lines(i), "SEQ.") > 0 Then
+            Dim upperLine As String
+            upperLine = UCase(lines(i))
+            ' ?e?P??t?G?]?t "LOAD" ?B?]?t "REGULATION" ?? "REG"?A?????]?t "COMBINE"
+            If (InStr(upperLine, "LOAD") > 0) And (InStr(upperLine, "REGULATION") > 0 Or InStr(upperLine, "REG") > 0) _
+               And InStr(upperLine, "COMBINE") = 0 Then
+                isLoadReg = True
+            End If
+        End If
+        
+        If isLoadReg Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            seqType = "LoadRegulation"
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+            
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractLoadRegulationParams(lines, seqStartLine, loadName)
+            seqList.Add seqList.count, seqInfo
+        End If
+        
+        ' ========== Input/Output ???h?P?_???? ==========
+        If inFirstUnit And InStr(lines(i), "Input/Output") > 0 And InStr(lines(i), "SEQ.") > 0 Then
+            seqTitle = Trim(lines(i))
+            seqStartLine = i
+            loadName = ExtractLoadNameFromSeq(lines, seqStartLine)
+
+            ' ??@?h?G???D????r?P?_?]?u???^
+            If InStr(lines(i), "Iin<") > 0 Or InStr(lines(i), "Iin <") > 0 Then
+                seqType = "InputOutput_Iin"
+            ElseIf InStr(lines(i), "Pin<") > 0 Or InStr(lines(i), "Pin <") > 0 Then
+                seqType = "InputOutput_Pin"
+            ElseIf InStr(lines(i), "Eff.") > 0 Or (InStr(lines(i), "Eff") > 0 And InStr(lines(i), "Eff>") > 0) Then
+                seqType = "InputOutput_Eff"
+            Else
+                ' ??G?h?G?????e?P?_?]?????^
+                seqType = DetectInputOutputTypeFromData(lines, seqStartLine)
+            End If
+            
+            Set seqInfo = CreateObject("Scripting.Dictionary")
+            seqInfo("title") = seqTitle
+            seqInfo("startLine") = seqStartLine
+            seqInfo("loadName") = loadName
+            seqInfo("type") = seqType
+            Set seqInfo("params") = ExtractInputOutputParams(lines, seqStartLine, loadName, seqType)
+            seqList.Add seqList.count, seqInfo
+        End If
+    Next i
+    
+    Set FindAllSequences = seqList
+End Function
+
+Function ExtractLoadNameFromSeq(lines() As String, startLine As Long) As String
+    Dim i As Long
+    Dim lineText As String
+    Dim parts() As String
+    
+    For i = startLine To startLine + 50
+        If i > UBound(lines) Then Exit For
+        lineText = Trim(lines(i))
+        If Left(lineText, 2) = "1." And InStr(lineText, "Load Name") = 0 Then
+            parts = SplitLine(lineText)
+            If UBound(parts) >= 1 Then
+                ExtractLoadNameFromSeq = Trim(parts(1))
+                Exit Function
+            End If
+        End If
+    Next i
+    ExtractLoadNameFromSeq = "12V"
+End Function
+
+Sub CreateSummarySectionInSheet(ws As Worksheet, customer As String, inspector As String, testDate As String, unitCount As Long)
+    Dim row As Long
+    ws.Columns("A:A").ColumnWidth = 15
+    ws.Columns("B:B").ColumnWidth = 25
+    row = 1
+    
+    ws.Range("A" & row).value = "Customer"
+    ws.Range("B" & row).value = customer
+    With ws.Range("A" & row)
+        .Font.Bold = True
+        .Interior.Color = RGB(252, 228, 214)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    With ws.Range("B" & row)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    ws.Rows(row).RowHeight = 25
+    
+    row = row + 1
+    ws.Range("A" & row).value = "Inspector"
+    ws.Range("B" & row).value = inspector
+    With ws.Range("A" & row)
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 242, 204)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    With ws.Range("B" & row)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    ws.Rows(row).RowHeight = 25
+    
+    row = row + 1
+    ws.Range("A" & row).value = "Date"
+    ws.Range("B" & row).value = testDate
+    With ws.Range("A" & row)
+        .Font.Bold = True
+        .Interior.Color = RGB(217, 225, 242)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    With ws.Range("B" & row)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    ws.Rows(row).RowHeight = 25
+    
+    row = row + 1
+    ws.Range("A" & row).value = "UnitCount"
+    ws.Range("B" & row).value = unitCount
+    With ws.Range("A" & row)
+        .Font.Bold = True
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    With ws.Range("B" & row)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    ws.Rows(row).RowHeight = 25
+    
+    With ws.Range("A1:B" & row)
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+
+Sub CreateAllSectionsInSheet(ws As Worksheet, seqList As Object, lines() As String, unitCount As Long)
+    Dim startCol As Integer
+    Dim seqIdx As Integer
+    Dim seqInfo As Object
+    
+    startCol = 2
+    
+    Dim maxParamRows As Long
+    maxParamRows = 0
+    
+    For seqIdx = 0 To seqList.count - 1
+        Set seqInfo = seqList(seqIdx)
+        Dim paramRowCount As Long
+        paramRowCount = GetParamRowCount(seqInfo("type"))
+        
+        If paramRowCount > maxParamRows Then
+            maxParamRows = paramRowCount
+        End If
+    Next seqIdx
+    
+    Dim snRowPosition As Long
+    snRowPosition = 2 + maxParamRows + 1
+    
+    For seqIdx = 0 To seqList.count - 1
+        Set seqInfo = seqList(seqIdx)
+        
+        If seqInfo("type") = "TurnOn" Then
+            CreateOneTurnOnSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 3
+        ElseIf seqInfo("type") = "HoldUp" Then
+            CreateOneHoldUpSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 4
+        ElseIf seqInfo("type") = "ShortCircuit" Then
+            CreateOneShortCircuitSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 3
+        ElseIf seqInfo("type") = "Combine" Then
+            CreateOneCombineSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 8
+        ElseIf seqInfo("type") = "OLP" Then
+            CreateOneOLPSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 3
+        ElseIf seqInfo("type") = "Dynamic" Then
+            CreateOneDynamicSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 4
+        ElseIf seqInfo("type") = "LoadRegulation" Then
+            CreateOneLoadRegulationSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 13  ' S/N + 11 ?????? + ???j??
+        ElseIf seqInfo("type") = "InputOutput_Iin" Or seqInfo("type") = "InputOutput_Pin" Or _
+               seqInfo("type") = "InputOutput_Eff" Or seqInfo("type") = "InputOutput_General" Then
+            CreateOneInputOutputSection ws, seqInfo, lines, unitCount, startCol, snRowPosition
+            startCol = startCol + 10
+        End If
+    Next seqIdx
+End Sub
+
+Sub CreateOneTurnOnSection(ws As Worksheet, seqInfo As Object, lines() As String, unitCount As Long, startCol As Integer, snRowTarget As Long)
+    Dim row As Long, col1 As Integer, col2 As Integer
+    Dim seqTitle As String, seqStartLine As Long, params As Object
+    
+    seqTitle = seqInfo("title")
+    seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' ??????Χ???????A????O???s??R
+    col1 = startCol
+    col2 = startCol + 1
+    
+    ws.Columns(col1).ColumnWidth = 18
+    ws.Columns(col2).ColumnWidth = 18
+    ws.Columns(col2 + 1).ColumnWidth = 2
+    
+    ' ========== ???D??]?O??????^==========
+    row = 1
+    ws.Range(ws.Cells(row, col1), ws.Cells(row, col2)).Merge
+    ws.Cells(row, col1).value = seqTitle
+    With ws.Cells(row, col1)
+        .Font.Size = 11
+        .Font.Bold = True
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+    End With
+    ws.Rows(row).RowHeight = 35
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Condition"
+    ws.Cells(row, col2).value = "Value"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(252, 228, 214)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ========== ????]???????^==========
+    Dim actualLoadName As String
+    actualLoadName = params("LoadName")
+    
+    ' ?? ??1?GPhase Delay ?]?w?]?L???^
+    Dim group1Params As Variant, group1Keys As Variant
+    group1Params = Array("ON Phase delay", "OFF Phase delay")
+    group1Keys = Array("ONPhaseDelay", "OFFPhaseDelay")
+    Call AddParamGroup(ws, row, col1, col2, group1Params, group1Keys, params, RGB(232, 244, 248))
+    
+    ' ?? ??2?G??J?]?w?]?L???^
+    Dim group2Params As Variant, group2Keys As Variant
+    group2Params = Array("Vin", "Fin")
+    group2Keys = Array("Vin", "Fin")
+    Call AddParamGroup(ws, row, col1, col2, group2Params, group2Keys, params, RGB(232, 248, 240))
+    
+    ' ?? ??3?G?t?????]?L????^
+    Dim group3Params As Variant, group3Keys As Variant
+    group3Params = Array(actualLoadName & "_Load Name", actualLoadName & "_MODE", _
+                         actualLoadName & "_Ifs", actualLoadName & "_Vfs")
+    group3Keys = Array("LoadName", "Mode", "Ifs", "Vfs")
+    Call AddParamGroup(ws, row, col1, col2, group3Params, group3Keys, params, RGB(255, 249, 230))
+    
+    ' ?? ??4?G????W??]?L????^
+    Dim group4Params As Variant, group4Keys As Variant
+    group4Params = Array(actualLoadName & "_Von", actualLoadName & "_I/R", _
+                         actualLoadName & "_Va", actualLoadName & "_Ton Max")
+    group4Keys = Array("Von", "IR", "Va", "TonMax")
+    Call AddParamGroup(ws, row, col1, col2, group4Params, group4Keys, params, RGB(255, 232, 214))
+    
+    ' ========== ????]?O??????^==========
+    row = snRowTarget
+    ws.Cells(row, col1).value = "S/N"
+    ws.Cells(row, col2).value = actualLoadName & "_Ton Read"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(189, 215, 238)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ?????]??q?}?C?g?J?u??^
+    Dim tonReadData As Object
+    Set tonReadData = ExtractAllTonReads(lines, seqTitle)
+
+    Dim snKey As Variant, maxValue As Double, minValue As Double, firstValue As Boolean
+    firstValue = True
+
+    ' ========== ??q?g?J?u??G?????}?C ==========
+    If tonReadData.count > 0 Then
+        Dim dataArray() As Variant
+        ReDim dataArray(1 To tonReadData.count, 1 To 2)
+
+        Dim idx As Long
+        idx = 1
+        For Each snKey In tonReadData.keys
+            dataArray(idx, 1) = snKey
+            dataArray(idx, 2) = tonReadData(snKey)
+
+            ' ?p?? MAX/MIN
+            Dim cleanedValue As String
+            cleanedValue = CleanNumericValue(CStr(tonReadData(snKey)))
+            If IsNumeric(cleanedValue) And cleanedValue <> "" Then
+                Dim currentValue As Double
+                currentValue = CDbl(cleanedValue)
+                If firstValue Then
+                    maxValue = currentValue
+                    minValue = currentValue
+                    firstValue = False
+                Else
+                    If currentValue > maxValue Then maxValue = currentValue
+                    If currentValue < minValue Then minValue = currentValue
+                End If
+            End If
+
+            idx = idx + 1
+        Next snKey
+
+        ' ?@????g?J???}?C?]?????????^
+        ws.Range(ws.Cells(row, col1), ws.Cells(row + tonReadData.count - 1, col2)).value = dataArray
+
+        ' ??q?]?w?榡
+        With ws.Range(ws.Cells(row, col1), ws.Cells(row + tonReadData.count - 1, col2))
+            .Interior.Color = RGB(217, 225, 242)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' ??O???`??]?????v?@??d?^
+        Dim dataRow As Long
+        For dataRow = row To row + tonReadData.count - 1
+            If InStr(CStr(ws.Cells(dataRow, col2).value), "?") > 0 Then
+                ws.Cells(dataRow, col2).Font.Color = RGB(255, 0, 0)
+                ws.Cells(dataRow, col2).Font.Bold = True
+            End If
+        Next dataRow
+
+        row = row + tonReadData.count
+    End If
+    
+    ws.Cells(row, col1).value = "Maximum"
+    If Not firstValue Then ws.Cells(row, col2).value = maxValue
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 218, 224)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Minimum"
+    If Not firstValue Then ws.Cells(row, col2).value = minValue
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    With ws.Range(ws.Cells(1, col1), ws.Cells(row, col2))
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+
+
+Sub CreateOneHoldUpSection(ws As Worksheet, seqInfo As Object, lines() As String, unitCount As Long, startCol As Integer, snRowTarget As Long)
+    Dim row As Long, col1 As Integer, col2 As Integer
+    Dim seqTitle As String, seqStartLine As Long, params As Object
+    
+    seqTitle = seqInfo("title")
+    seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' ??????Χ???????
+    col1 = startCol
+    col2 = startCol + 1
+    
+    ws.Columns(col1).ColumnWidth = 18
+    ws.Columns(col2).ColumnWidth = 18
+    ws.Columns(col2 + 1).ColumnWidth = 18
+    ws.Columns(col2 + 2).ColumnWidth = 2
+    
+    ' ========== ???D??]?O??????^==========
+    row = 1
+    ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 1)).Merge
+    ws.Cells(row, col1).value = seqTitle
+    With ws.Cells(row, col1)
+        .Font.Size = 11
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 218, 224)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+    End With
+    ws.Rows(row).RowHeight = 35
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Condition"
+    ws.Cells(row, col2).value = "Value"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(252, 228, 214)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ========== ????]???????^==========
+    Dim actualLoadName As String
+    actualLoadName = params("LoadName")
+    
+    ' ?? ??1?G??J?]?w?]?L???^
+    Dim group1Params As Variant, group1Keys As Variant
+    group1Params = Array("Vin", "Fin")
+    group1Keys = Array("Vin", "Fin")
+    Call AddParamGroup(ws, row, col1, col2, group1Params, group1Keys, params, RGB(232, 244, 248))
+    
+    ' ?? ??2?G?t?????]?L???^
+    Dim group2Params As Variant, group2Keys As Variant
+    group2Params = Array(actualLoadName & "_Load Name", actualLoadName & "_MODE", _
+                         actualLoadName & "_Ifs", actualLoadName & "_Vfs")
+    group2Keys = Array("LoadName", "Mode", "Ifs", "Vfs")
+    Call AddParamGroup(ws, row, col1, col2, group2Params, group2Keys, params, RGB(232, 248, 240))
+    
+    ' ?? ??3?G??o?]?w?]?L????^
+    Dim group3Params As Variant, group3Keys As Variant
+    group3Params = Array(actualLoadName & "_Von", actualLoadName & "_I/R", actualLoadName & "_Va")
+    group3Keys = Array("Von", "IR", "Va")
+    Call AddParamGroup(ws, row, col1, col2, group3Params, group3Keys, params, RGB(255, 249, 230))
+    
+    ' ?? ??4?G?O??????W??]?L????^
+    Dim group4Params As Variant, group4Keys As Variant
+    group4Params = Array(actualLoadName & "_Thd Min")
+    group4Keys = Array("ThdMin")
+    Call AddParamGroup(ws, row, col1, col2, group4Params, group4Keys, params, RGB(255, 232, 214))
+    
+    ' ========== ????]?O??????^==========
+    row = snRowTarget
+    ws.Cells(row, col1).value = "S/N"
+    ws.Cells(row, col2).value = actualLoadName & "_Tds"
+    ws.Cells(row, col2 + 1).value = actualLoadName & "_Tdl"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(189, 215, 238)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ?????]??q?}?C?g?J?u??^
+    Dim readData As Object
+    Set readData = ExtractAllHoldUpReads(lines, seqTitle)
+
+    Dim snKey As Variant, maxTdsValue As Double, minTdsValue As Double
+    Dim maxTdlValue As Double, minTdlValue As Double, firstValue As Boolean
+    firstValue = True
+
+    ' ========== ??q?g?J?u??G?????}?C ==========
+    If readData.count > 0 Then
+        Dim dataArray() As Variant
+        ReDim dataArray(1 To readData.count, 1 To 3)
+
+        Dim idx As Long
+        idx = 1
+        For Each snKey In readData.keys
+            Dim readValues As Object
+            Set readValues = readData(snKey)
+
+            dataArray(idx, 1) = snKey
+            dataArray(idx, 2) = readValues("Tds")
+            dataArray(idx, 3) = readValues("Tdl")
+
+            ' ?p?? MAX/MIN
+            Dim currentTds As Double, currentTdl As Double
+            If IsNumeric(readValues("Tds")) Then
+                currentTds = CDbl(readValues("Tds"))
+                If firstValue Then
+                    maxTdsValue = currentTds
+                    minTdsValue = currentTds
+                Else
+                    If currentTds > maxTdsValue Then maxTdsValue = currentTds
+                    If currentTds < minTdsValue Then minTdsValue = currentTds
+                End If
+            End If
+
+            If IsNumeric(readValues("Tdl")) Then
+                currentTdl = CDbl(readValues("Tdl"))
+                If firstValue Then
+                    maxTdlValue = currentTdl
+                    minTdlValue = currentTdl
+                    firstValue = False
+                Else
+                    If currentTdl > maxTdlValue Then maxTdlValue = currentTdl
+                    If currentTdl < minTdlValue Then minTdlValue = currentTdl
+                End If
+            End If
+
+            idx = idx + 1
+        Next snKey
+
+        ' ?@????g?J???}?C?]?????????^
+        ws.Range(ws.Cells(row, col1), ws.Cells(row + readData.count - 1, col2 + 1)).value = dataArray
+
+        ' ??q?]?w?榡
+        With ws.Range(ws.Cells(row, col1), ws.Cells(row + readData.count - 1, col2 + 1))
+            .Interior.Color = RGB(217, 225, 242)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' ??O???`??]?????v?@??d?^
+        Dim dataRow As Long
+        For dataRow = row To row + readData.count - 1
+            If InStr(CStr(ws.Cells(dataRow, col2).value), "?") > 0 Then
+                ws.Cells(dataRow, col2).Font.Color = RGB(255, 0, 0)
+                ws.Cells(dataRow, col2).Font.Bold = True
+            End If
+            If InStr(CStr(ws.Cells(dataRow, col2 + 1).value), "?") > 0 Then
+                ws.Cells(dataRow, col2 + 1).Font.Color = RGB(255, 0, 0)
+                ws.Cells(dataRow, col2 + 1).Font.Bold = True
+            End If
+        Next dataRow
+
+        row = row + readData.count
+    End If
+    
+    ws.Cells(row, col1).value = "Maximum"
+    If Not firstValue Then
+        ws.Cells(row, col2).value = maxTdsValue
+        ws.Cells(row, col2 + 1).value = maxTdlValue
+    End If
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 218, 224)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Minimum"
+    If Not firstValue Then
+        ws.Cells(row, col2).value = minTdsValue
+        ws.Cells(row, col2 + 1).value = minTdlValue
+    End If
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    With ws.Range(ws.Cells(1, col1), ws.Cells(row, col2 + 1))
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+
+Sub CreateOneShortCircuitSection(ws As Worksheet, seqInfo As Object, lines() As String, unitCount As Long, startCol As Integer, snRowTarget As Long)
+    Dim row As Long, col1 As Integer, col2 As Integer
+    Dim seqTitle As String, seqStartLine As Long, params As Object
+    
+    seqTitle = seqInfo("title")
+    seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' ??????Χ???????
+    col1 = startCol
+    col2 = startCol + 1
+    
+    ws.Columns(col1).ColumnWidth = 18
+    ws.Columns(col2).ColumnWidth = 18
+    ws.Columns(col2 + 1).ColumnWidth = 2
+    
+    ' ========== ???D??]?O??????^==========
+    row = 1
+    ws.Range(ws.Cells(row, col1), ws.Cells(row, col2)).Merge
+    ws.Cells(row, col1).value = seqTitle
+    With ws.Cells(row, col1)
+        .Font.Size = 11
+        .Font.Bold = True
+        .Interior.Color = RGB(189, 215, 238)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+    End With
+    ws.Rows(row).RowHeight = 35
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Condition"
+    ws.Cells(row, col2).value = "Value"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(252, 228, 214)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ========== ????]???????^==========
+    Dim actualLoadName As String
+    actualLoadName = params("LoadName")
+    
+    ' ?? ??1?G??J?]?w?]?L???^
+    Dim group1Params As Variant, group1Keys As Variant
+    group1Params = Array("Vin", "Fin")
+    group1Keys = Array("Vin", "Fin")
+    Call AddParamGroup(ws, row, col1, col2, group1Params, group1Keys, params, RGB(232, 244, 248))
+    
+    ' ?? ??2?G????]?w?]?L???^
+    Dim group2Params As Variant, group2Keys As Variant
+    group2Params = Array("Which Load")
+    group2Keys = Array("WhichLoad")
+    Call AddParamGroup(ws, row, col1, col2, group2Params, group2Keys, params, RGB(232, 248, 240))
+    
+    ' ?? ??3?G?t?????]?L????^
+    Dim group3Params As Variant, group3Keys As Variant
+    group3Params = Array(actualLoadName & "_Load Name", actualLoadName & "_MODE", _
+                         actualLoadName & "_Ifs", actualLoadName & "_Vfs", _
+                         actualLoadName & "_I/R")
+    group3Keys = Array("LoadName", "Mode", "Ifs", "Vfs", "IR")
+    Call AddParamGroup(ws, row, col1, col2, group3Params, group3Keys, params, RGB(255, 249, 230))
+    
+    ' ========== ????]?O??????^==========
+    row = snRowTarget
+    ws.Cells(row, col1).value = "S/N"
+    ws.Cells(row, col2).value = actualLoadName & "_Pin"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(189, 215, 238)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ?????]??q?}?C?g?J?u??^
+    Dim pinReadData As Object
+    Set pinReadData = ExtractAllPinReads(lines, seqTitle)
+
+    Dim snKey As Variant, maxValue As Double, minValue As Double, firstValue As Boolean
+    firstValue = True
+
+    ' ========== ??q?g?J?u??G?????}?C ==========
+    If pinReadData.count > 0 Then
+        Dim dataArray() As Variant
+        ReDim dataArray(1 To pinReadData.count, 1 To 2)
+
+        Dim idx As Long
+        idx = 1
+        For Each snKey In pinReadData.keys
+            dataArray(idx, 1) = snKey
+            dataArray(idx, 2) = pinReadData(snKey)
+
+            ' ?p?? MAX/MIN
+            Dim cleanedValue As String
+            cleanedValue = CleanNumericValue(CStr(pinReadData(snKey)))
+            If IsNumeric(cleanedValue) And cleanedValue <> "" Then
+                Dim currentValue As Double
+                currentValue = CDbl(cleanedValue)
+                If firstValue Then
+                    maxValue = currentValue
+                    minValue = currentValue
+                    firstValue = False
+                Else
+                    If currentValue > maxValue Then maxValue = currentValue
+                    If currentValue < minValue Then minValue = currentValue
+                End If
+            End If
+
+            idx = idx + 1
+        Next snKey
+
+        ' ?@????g?J???}?C?]?????????^
+        ws.Range(ws.Cells(row, col1), ws.Cells(row + pinReadData.count - 1, col2)).value = dataArray
+
+        ' ??q?]?w?榡
+        With ws.Range(ws.Cells(row, col1), ws.Cells(row + pinReadData.count - 1, col2))
+            .Interior.Color = RGB(217, 225, 242)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' ??O???`??]?????v?@??d?^
+        Dim dataRow As Long
+        For dataRow = row To row + pinReadData.count - 1
+            If InStr(CStr(ws.Cells(dataRow, col2).value), "?") > 0 Then
+                ws.Cells(dataRow, col2).Font.Color = RGB(255, 0, 0)
+                ws.Cells(dataRow, col2).Font.Bold = True
+            End If
+        Next dataRow
+
+        row = row + pinReadData.count
+    End If
+    
+    ws.Cells(row, col1).value = "Maximum"
+    If Not firstValue Then ws.Cells(row, col2).value = maxValue
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 218, 224)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Minimum"
+    If Not firstValue Then ws.Cells(row, col2).value = minValue
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    With ws.Range(ws.Cells(1, col1), ws.Cells(row, col2))
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+Sub CreateOneCombineSection(ws As Worksheet, seqInfo As Object, lines() As String, unitCount As Long, startCol As Integer, snRowTarget As Long)
+    Dim row As Long, col1 As Integer
+    Dim seqTitle As String, seqStartLine As Long, params As Object
+    
+    seqTitle = seqInfo("title")
+    seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' ??????Χ???????
+    col1 = startCol
+    
+    ' ??m?C?
+    ws.Columns(col1).ColumnWidth = 18
+    Dim i As Integer
+    For i = 1 To 6
+        ws.Columns(col1 + i).ColumnWidth = 18
+    Next i
+    ws.Columns(col1 + 7).ColumnWidth = 2
+    
+    ' ????
+    row = 1
+    ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6)).Merge
+    ws.Cells(row, col1).value = seqTitle
+    With ws.Cells(row, col1)
+        .Font.Size = 11
+        .Font.Bold = True
+        .Interior.Color = RGB(230, 184, 175)  ' ????
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+    End With
+    ws.Rows(row).RowHeight = 35
+    row = row + 1
+    
+    ' ??????
+    Dim actualLoadName As String
+    actualLoadName = params("LoadName")
+    
+    ' ============================================
+    ' Value-1, Value-2, Value-3 ????]???????^
+    ' ============================================
+    ws.Cells(row, col1).value = "Condition"
+    ws.Cells(row, col1).Interior.Color = RGB(255, 242, 204)  ' ????
+    
+    ' Value-1 (?????)
+    ws.Range(ws.Cells(row, col1 + 1), ws.Cells(row, col1 + 2)).Merge
+    ws.Cells(row, col1 + 1).value = "Value-1"
+    ws.Cells(row, col1 + 1).Interior.Color = RGB(189, 215, 238)  ' ????
+    
+    ' Value-2 (?????)
+    ws.Range(ws.Cells(row, col1 + 3), ws.Cells(row, col1 + 4)).Merge
+    ws.Cells(row, col1 + 3).value = "Value-2"
+    ws.Cells(row, col1 + 3).Interior.Color = RGB(198, 224, 180)  ' ????
+    
+    ' Value-3 (??????)
+    ws.Range(ws.Cells(row, col1 + 5), ws.Cells(row, col1 + 6)).Merge
+    ws.Cells(row, col1 + 5).value = "Value-3"
+    ws.Cells(row, col1 + 5).Interior.Color = RGB(255, 228, 181)  ' ?????
+    
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6))
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ============================================
+    ' Vin ????]???????^
+    ' ============================================
+    ws.Cells(row, col1).value = "Vin"
+    ws.Cells(row, col1).Interior.Color = RGB(255, 242, 204)  ' ????
+    
+    ' Value-1 ??? Vin
+    ws.Range(ws.Cells(row, col1 + 1), ws.Cells(row, col1 + 2)).Merge
+    ws.Cells(row, col1 + 1).value = params("Vin1")
+    ws.Cells(row, col1 + 1).Interior.Color = RGB(189, 215, 238)  ' ????
+    
+    ' Value-2 ??? Vin
+    ws.Range(ws.Cells(row, col1 + 3), ws.Cells(row, col1 + 4)).Merge
+    ws.Cells(row, col1 + 3).value = params("Vin2")
+    ws.Cells(row, col1 + 3).Interior.Color = RGB(198, 224, 180)  ' ????
+    
+    ' Value-3 ??? Vin
+    ws.Range(ws.Cells(row, col1 + 5), ws.Cells(row, col1 + 6)).Merge
+    ws.Cells(row, col1 + 5).value = params("Vin3")
+    ws.Cells(row, col1 + 5).Interior.Color = RGB(255, 228, 181)  ' ?????
+    
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6))
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ============================================
+    ' Fac ????]???????^
+    ' ============================================
+    ws.Cells(row, col1).value = "Fac"
+    ws.Cells(row, col1).Interior.Color = RGB(255, 242, 204)  ' ????
+    
+    ' Value-1 ??? Fac
+    ws.Range(ws.Cells(row, col1 + 1), ws.Cells(row, col1 + 2)).Merge
+    ws.Cells(row, col1 + 1).value = params("Fac1")
+    ws.Cells(row, col1 + 1).Interior.Color = RGB(189, 215, 238)  ' ????
+    
+    ' Value-2 ??? Fac
+    ws.Range(ws.Cells(row, col1 + 3), ws.Cells(row, col1 + 4)).Merge
+    ws.Cells(row, col1 + 3).value = params("Fac2")
+    ws.Cells(row, col1 + 3).Interior.Color = RGB(198, 224, 180)  ' ????
+    
+    ' Value-3 ??? Fac
+    ws.Range(ws.Cells(row, col1 + 5), ws.Cells(row, col1 + 6)).Merge
+    ws.Cells(row, col1 + 5).value = params("Fac3")
+    ws.Cells(row, col1 + 5).Interior.Color = RGB(255, 228, 181)  ' ?????
+    
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6))
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ============================================
+    ' I/R ????]???????A???Vin?MFac?^
+    ' ============================================
+    ws.Cells(row, col1).value = actualLoadName & "_I/R"
+    ws.Cells(row, col1).Interior.Color = RGB(255, 242, 204)  ' ????
+    
+    ' Value-1 ??? I/R
+    ws.Range(ws.Cells(row, col1 + 1), ws.Cells(row, col1 + 2)).Merge
+    ws.Cells(row, col1 + 1).value = params("IR1")
+    ws.Cells(row, col1 + 1).Interior.Color = RGB(189, 215, 238)  ' ????
+    
+    ' Value-2 ??? I/R
+    ws.Range(ws.Cells(row, col1 + 3), ws.Cells(row, col1 + 4)).Merge
+    ws.Cells(row, col1 + 3).value = params("IR2")
+    ws.Cells(row, col1 + 3).Interior.Color = RGB(198, 224, 180)  ' ????
+    
+    ' Value-3 ??? I/R
+    ws.Range(ws.Cells(row, col1 + 5), ws.Cells(row, col1 + 6)).Merge
+    ws.Cells(row, col1 + 5).value = params("IR3")
+    ws.Cells(row, col1 + 5).Interior.Color = RGB(255, 228, 181)  ' ?????
+    
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6))
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ============================================
+    ' ?q?????]????Value?C?X?}?A?????^
+    ' ============================================
+    Dim paramNames As Variant, paramKeys As Variant
+    paramNames = Array(actualLoadName & "_Load Name", actualLoadName & "_MODE", _
+                       actualLoadName & "_Ifs", actualLoadName & "_Vfs", _
+                       actualLoadName & "_Noise Filter", _
+                       actualLoadName & "_Vdc Max", actualLoadName & "_Vdc Min", _
+                       actualLoadName & "_Vpp Max")
+    paramKeys = Array("LoadName", "Mode", "Ifs", "Vfs", "NoiseFilter", _
+                      "VdcMax", "VdcMin", "VppMax")
+    
+    For i = 0 To UBound(paramNames)
+        ws.Cells(row, col1).value = paramNames(i)
+        ws.Cells(row, col1).Interior.Color = RGB(255, 242, 204)  ' ????
+        
+        ' ??????C?X?}
+        ws.Range(ws.Cells(row, col1 + 1), ws.Cells(row, col1 + 6)).Merge
+        ws.Cells(row, col1 + 1).value = params(paramKeys(i))
+        ws.Cells(row, col1 + 1).Interior.Color = RGB(255, 242, 204)  ' ?Τ@???I????]?L???^
+        
+        With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6))
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+        row = row + 1
+    Next i
+    
+    ' ============================================
+    ' ???????]S/N??A???????^
+    ' ============================================
+    row = snRowTarget
+    ws.Cells(row, col1).value = "S/N"
+    ws.Cells(row, col1).Interior.Color = RGB(217, 225, 242)  ' ?H???
+    
+    ' Value-1 ????C???]????^
+    ws.Cells(row, col1 + 1).value = actualLoadName & "_Vdc-1 RD"
+    ws.Cells(row, col1 + 1).Interior.Color = RGB(189, 215, 238)
+    ws.Cells(row, col1 + 2).value = actualLoadName & "_Vpp-1 RD"
+    ws.Cells(row, col1 + 2).Interior.Color = RGB(189, 215, 238)
+    
+    ' Value-2 ????C???]????^
+    ws.Cells(row, col1 + 3).value = actualLoadName & "_Vdc-2 RD"
+    ws.Cells(row, col1 + 3).Interior.Color = RGB(198, 224, 180)
+    ws.Cells(row, col1 + 4).value = actualLoadName & "_Vpp-2 RD"
+    ws.Cells(row, col1 + 4).Interior.Color = RGB(198, 224, 180)
+    
+    ' Value-3 ????C???]?????^
+    ws.Cells(row, col1 + 5).value = actualLoadName & "_Vdc-3 RD"
+    ws.Cells(row, col1 + 5).Interior.Color = RGB(255, 228, 181)
+    ws.Cells(row, col1 + 6).value = actualLoadName & "_Vpp-3 RD"
+    ws.Cells(row, col1 + 6).Interior.Color = RGB(255, 228, 181)
+    
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6))
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ============================================
+    ' ????]??q?g?J?u??^
+    ' ============================================
+    Dim combineData As Object
+    Set combineData = ExtractAllCombineReads(lines, seqTitle)
+
+    Dim maxVdc1 As Double, minVdc1 As Double
+    Dim maxVdc2 As Double, minVdc2 As Double
+    Dim maxVdc3 As Double, minVdc3 As Double
+    Dim maxVpp1 As Double, minVpp1 As Double
+    Dim maxVpp2 As Double, minVpp2 As Double
+    Dim maxVpp3 As Double, minVpp3 As Double
+
+    Dim firstVdc1 As Boolean, firstVdc2 As Boolean, firstVdc3 As Boolean
+    Dim firstVpp1 As Boolean, firstVpp2 As Boolean, firstVpp3 As Boolean
+    firstVdc1 = True
+    firstVdc2 = True
+    firstVdc3 = True
+    firstVpp1 = True
+    firstVpp2 = True
+    firstVpp3 = True
+
+    Dim snKey As Variant
+
+    ' ========== ?u??G??Χ?q?}?C?g?J ==========
+    If combineData.count > 0 Then
+        ' ??? 7 ??}?C (S/N, Vdc1, Vpp1, Vdc2, Vpp2, Vdc3, Vpp3)
+        Dim dataArray() As Variant
+        ReDim dataArray(1 To combineData.count, 1 To 7)
+
+        Dim idx As Long
+        idx = 1
+        Dim startRow As Long
+        startRow = row
+
+        For Each snKey In combineData.keys
+            Dim readVals As Object
+            Set readVals = combineData(snKey)
+
+            ' ??R?}?C
+            dataArray(idx, 1) = snKey
+            dataArray(idx, 2) = readVals("Vdc1")
+            dataArray(idx, 3) = readVals("Vpp1")
+            dataArray(idx, 4) = readVals("Vdc2")
+            dataArray(idx, 5) = readVals("Vpp2")
+            dataArray(idx, 6) = readVals("Vdc3")
+            dataArray(idx, 7) = readVals("Vpp3")
+
+            ' ?M?z???ip???j??p??]??οW?? firstValue ?X??^
+            Dim cleanVdc1 As String, cleanVdc2 As String, cleanVdc3 As String
+            Dim cleanVpp1 As String, cleanVpp2 As String, cleanVpp3 As String
+
+            cleanVdc1 = CleanNumericValue(CStr(readVals("Vdc1")))
+            cleanVdc2 = CleanNumericValue(CStr(readVals("Vdc2")))
+            cleanVdc3 = CleanNumericValue(CStr(readVals("Vdc3")))
+            cleanVpp1 = CleanNumericValue(CStr(readVals("Vpp1")))
+            cleanVpp2 = CleanNumericValue(CStr(readVals("Vpp2")))
+            cleanVpp3 = CleanNumericValue(CStr(readVals("Vpp3")))
+
+            ' ?B?z Vdc1
+            If IsNumeric(cleanVdc1) And cleanVdc1 <> "" Then
+                If firstVdc1 Then
+                    maxVdc1 = CDbl(cleanVdc1)
+                    minVdc1 = CDbl(cleanVdc1)
+                    firstVdc1 = False
+                Else
+                    If CDbl(cleanVdc1) > maxVdc1 Then maxVdc1 = CDbl(cleanVdc1)
+                    If CDbl(cleanVdc1) < minVdc1 Then minVdc1 = CDbl(cleanVdc1)
+                End If
+            End If
+
+            ' ?B?z Vdc2
+            If IsNumeric(cleanVdc2) And cleanVdc2 <> "" Then
+                If firstVdc2 Then
+                    maxVdc2 = CDbl(cleanVdc2)
+                    minVdc2 = CDbl(cleanVdc2)
+                    firstVdc2 = False
+                Else
+                    If CDbl(cleanVdc2) > maxVdc2 Then maxVdc2 = CDbl(cleanVdc2)
+                    If CDbl(cleanVdc2) < minVdc2 Then minVdc2 = CDbl(cleanVdc2)
+                End If
+            End If
+
+            ' ?B?z Vdc3
+            If IsNumeric(cleanVdc3) And cleanVdc3 <> "" Then
+                If firstVdc3 Then
+                    maxVdc3 = CDbl(cleanVdc3)
+                    minVdc3 = CDbl(cleanVdc3)
+                    firstVdc3 = False
+                Else
+                    If CDbl(cleanVdc3) > maxVdc3 Then maxVdc3 = CDbl(cleanVdc3)
+                    If CDbl(cleanVdc3) < minVdc3 Then minVdc3 = CDbl(cleanVdc3)
+                End If
+            End If
+
+            ' ?B?z Vpp1
+            If IsNumeric(cleanVpp1) And cleanVpp1 <> "" Then
+                If firstVpp1 Then
+                    maxVpp1 = CDbl(cleanVpp1)
+                    minVpp1 = CDbl(cleanVpp1)
+                    firstVpp1 = False
+                Else
+                    If CDbl(cleanVpp1) > maxVpp1 Then maxVpp1 = CDbl(cleanVpp1)
+                    If CDbl(cleanVpp1) < minVpp1 Then minVpp1 = CDbl(cleanVpp1)
+                End If
+            End If
+
+            ' ?B?z Vpp2
+            If IsNumeric(cleanVpp2) And cleanVpp2 <> "" Then
+                If firstVpp2 Then
+                    maxVpp2 = CDbl(cleanVpp2)
+                    minVpp2 = CDbl(cleanVpp2)
+                    firstVpp2 = False
+                Else
+                    If CDbl(cleanVpp2) > maxVpp2 Then maxVpp2 = CDbl(cleanVpp2)
+                    If CDbl(cleanVpp2) < minVpp2 Then minVpp2 = CDbl(cleanVpp2)
+                End If
+            End If
+
+            ' ?B?z Vpp3
+            If IsNumeric(cleanVpp3) And cleanVpp3 <> "" Then
+                If firstVpp3 Then
+                    maxVpp3 = CDbl(cleanVpp3)
+                    minVpp3 = CDbl(cleanVpp3)
+                    firstVpp3 = False
+                Else
+                    If CDbl(cleanVpp3) > maxVpp3 Then maxVpp3 = CDbl(cleanVpp3)
+                    If CDbl(cleanVpp3) < minVpp3 Then minVpp3 = CDbl(cleanVpp3)
+                End If
+            End If
+
+            idx = idx + 1
+        Next snKey
+
+        ' ?@????g?J??????
+        ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + combineData.count - 1, col1 + 6)).value = dataArray
+
+        ' ??q?]?w?榡?]?????C??^
+        ' S/N ??]?H???^
+        With ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + combineData.count - 1, col1))
+            .Interior.Color = RGB(217, 225, 242)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' Value-1 ??]???^
+        With ws.Range(ws.Cells(startRow, col1 + 1), ws.Cells(startRow + combineData.count - 1, col1 + 2))
+            .Interior.Color = RGB(189, 215, 238)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' Value-2 ??]???^
+        With ws.Range(ws.Cells(startRow, col1 + 3), ws.Cells(startRow + combineData.count - 1, col1 + 4))
+            .Interior.Color = RGB(198, 224, 180)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' Value-3 ??]????^
+        With ws.Range(ws.Cells(startRow, col1 + 5), ws.Cells(startRow + combineData.count - 1, col1 + 6))
+            .Interior.Color = RGB(255, 228, 181)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' ??b???n???O???`??]????^
+        Dim checkRow As Long
+        checkRow = startRow
+        Dim colIdx As Integer
+        For Each snKey In combineData.keys
+            Set readVals = combineData(snKey)
+            For colIdx = 1 To 6
+                If InStr(CStr(ws.Cells(checkRow, col1 + colIdx).value), "?") > 0 Then
+                    ws.Cells(checkRow, col1 + colIdx).Font.Color = RGB(255, 0, 0)
+                    ws.Cells(checkRow, col1 + colIdx).Font.Bold = True
+                End If
+            Next colIdx
+            checkRow = checkRow + 1
+        Next snKey
+
+        row = startRow + combineData.count
+    End If
+    
+    ' ============================================
+    ' Maximum ??]???????^
+    ' ============================================
+    ws.Cells(row, col1).value = "Maximum"
+    ws.Cells(row, col1).Interior.Color = RGB(255, 218, 224)  ' ?????
+    
+    ' Value-1 ?
+    If Not firstVdc1 Then ws.Cells(row, col1 + 1).value = maxVdc1
+    ws.Cells(row, col1 + 1).Interior.Color = RGB(255, 218, 224)
+    If Not firstVpp1 Then ws.Cells(row, col1 + 2).value = maxVpp1
+    ws.Cells(row, col1 + 2).Interior.Color = RGB(255, 218, 224)
+    
+    ' Value-2 ?
+    If Not firstVdc2 Then ws.Cells(row, col1 + 3).value = maxVdc2
+    ws.Cells(row, col1 + 3).Interior.Color = RGB(255, 218, 224)
+    If Not firstVpp2 Then ws.Cells(row, col1 + 4).value = maxVpp2
+    ws.Cells(row, col1 + 4).Interior.Color = RGB(255, 218, 224)
+    
+    ' Value-3 ?
+    If Not firstVdc3 Then ws.Cells(row, col1 + 5).value = maxVdc3
+    ws.Cells(row, col1 + 5).Interior.Color = RGB(255, 218, 224)
+    If Not firstVpp3 Then ws.Cells(row, col1 + 6).value = maxVpp3
+    ws.Cells(row, col1 + 6).Interior.Color = RGB(255, 218, 224)
+    
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6))
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ============================================
+    ' Minimum ??]???????^
+    ' ============================================
+    ws.Cells(row, col1).value = "Minimum"
+    ws.Cells(row, col1).Interior.Color = RGB(198, 224, 180)  ' ????
+    
+    ' Value-1 ?
+    If Not firstVdc1 Then ws.Cells(row, col1 + 1).value = minVdc1
+    ws.Cells(row, col1 + 1).Interior.Color = RGB(198, 224, 180)
+    If Not firstVpp1 Then ws.Cells(row, col1 + 2).value = minVpp1
+    ws.Cells(row, col1 + 2).Interior.Color = RGB(198, 224, 180)
+    
+    ' Value-2 ?
+    If Not firstVdc2 Then ws.Cells(row, col1 + 3).value = minVdc2
+    ws.Cells(row, col1 + 3).Interior.Color = RGB(198, 224, 180)
+    If Not firstVpp2 Then ws.Cells(row, col1 + 4).value = minVpp2
+    ws.Cells(row, col1 + 4).Interior.Color = RGB(198, 224, 180)
+    
+    ' Value-3 ?
+    If Not firstVdc3 Then ws.Cells(row, col1 + 5).value = minVdc3
+    ws.Cells(row, col1 + 5).Interior.Color = RGB(198, 224, 180)
+    If Not firstVpp3 Then ws.Cells(row, col1 + 6).value = minVpp3
+    ws.Cells(row, col1 + 6).Interior.Color = RGB(198, 224, 180)
+    
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 6))
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    ' ?K?[???
+    With ws.Range(ws.Cells(1, col1), ws.Cells(row, col1 + 6))
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+
+
+Sub CreateOneOLPSection(ws As Worksheet, seqInfo As Object, lines() As String, unitCount As Long, startCol As Integer, snRowTarget As Long)
+    Dim row As Long, col1 As Integer, col2 As Integer
+    Dim seqTitle As String, seqStartLine As Long, params As Object
+    
+    seqTitle = seqInfo("title")
+    seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' ??????Χ???????
+    col1 = startCol
+    col2 = startCol + 1
+    
+    ws.Columns(col1).ColumnWidth = 18
+    ws.Columns(col2).ColumnWidth = 18
+    ws.Columns(col2 + 1).ColumnWidth = 2
+    
+    ' ========== ???D??]?O??????^==========
+    row = 1
+    ws.Range(ws.Cells(row, col1), ws.Cells(row, col2)).Merge
+    ws.Cells(row, col1).value = seqTitle
+    With ws.Cells(row, col1)
+        .Font.Size = 11
+        .Font.Bold = True
+        .Interior.Color = RGB(256, 228, 181)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+    End With
+    ws.Rows(row).RowHeight = 35
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Condition"
+    ws.Cells(row, col2).value = "Value"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(252, 228, 214)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ========== ????]???????^==========
+    Dim actualLoadName As String
+    actualLoadName = params("LoadName")
+    
+    ' ?? ??1?G??J?]?w?]?L???^
+    Dim group1Params As Variant, group1Keys As Variant
+    group1Params = Array("Vin", "Fin")
+    group1Keys = Array("Vin", "Fin")
+    Call AddParamGroup(ws, row, col1, col2, group1Params, group1Keys, params, RGB(232, 244, 248))
+    
+    ' ?? ??2?G????]?w?]?L???^
+    Dim group2Params As Variant, group2Keys As Variant
+    group2Params = Array("Test on LOAD")
+    group2Keys = Array("TestOnLoad")
+    Call AddParamGroup(ws, row, col1, col2, group2Params, group2Keys, params, RGB(232, 248, 240))
+    
+    ' ?? ??3?G?t?????]?L????^
+    Dim group3Params As Variant, group3Keys As Variant
+    group3Params = Array(actualLoadName & "_Load Name", actualLoadName & "_MODE", _
+                         actualLoadName & "_Ifs", actualLoadName & "_Vfs", _
+                         actualLoadName & "_I/R")
+    group3Keys = Array("LoadName", "Mode", "Ifs", "Vfs", "IR")
+    Call AddParamGroup(ws, row, col1, col2, group3Params, group3Keys, params, RGB(255, 249, 230))
+    
+    ' ?? ??4?G????W??]?L????^
+    Dim group4Params As Variant, group4Keys As Variant
+    group4Params = Array(actualLoadName & "_Trip Point_Max", actualLoadName & "_Trip Point_Min")
+    group4Keys = Array("TripPointMax", "TripPointMin")
+    Call AddParamGroup(ws, row, col1, col2, group4Params, group4Keys, params, RGB(255, 232, 214))
+    
+    ' ========== ????]?O??????^==========
+    row = snRowTarget
+    ws.Cells(row, col1).value = "S/N"
+    ws.Cells(row, col2).value = actualLoadName & "_Trip Point_Min_Reading"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(189, 215, 238)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ?????]??q?g?J?u??^
+    Dim olpReadData As Object
+    Set olpReadData = ExtractAllOLPReads(lines, seqTitle)
+
+    Dim snKey As Variant, maxValue As Double, minValue As Double, firstValue As Boolean
+    firstValue = True
+
+    ' ========== ?u??G??Χ?q?}?C?g?J ==========
+    If olpReadData.count > 0 Then
+        ' ??? 2D ?}?C
+        Dim dataArray() As Variant
+        ReDim dataArray(1 To olpReadData.count, 1 To 2)
+
+        Dim idx As Long
+        idx = 1
+        Dim startRow As Long
+        startRow = row
+
+        For Each snKey In olpReadData.keys
+            ' ??R?}?C
+            dataArray(idx, 1) = snKey
+            dataArray(idx, 2) = olpReadData(snKey)
+
+            ' ?p?? MAX/MIN?]??βM?z?????^
+            Dim cleanedValue As String
+            cleanedValue = CleanNumericValue(CStr(olpReadData(snKey)))
+            If IsNumeric(cleanedValue) And cleanedValue <> "" Then
+                Dim currentValue As Double
+                currentValue = CDbl(cleanedValue)
+                If firstValue Then
+                    maxValue = currentValue
+                    minValue = currentValue
+                    firstValue = False
+                Else
+                    If currentValue > maxValue Then maxValue = currentValue
+                    If currentValue < minValue Then minValue = currentValue
+                End If
+            End If
+
+            idx = idx + 1
+        Next snKey
+
+        ' ?@????g?J??????
+        ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + olpReadData.count - 1, col2)).value = dataArray
+
+        ' ??q?]?w?榡
+        With ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + olpReadData.count - 1, col2))
+            .Interior.Color = RGB(217, 225, 242)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' ??b???n???O???`??]????^
+        Dim checkRow As Long
+        checkRow = startRow
+        For Each snKey In olpReadData.keys
+            If InStr(CStr(olpReadData(snKey)), "?") > 0 Then
+                ws.Cells(checkRow, col2).Font.Color = RGB(255, 0, 0)
+                ws.Cells(checkRow, col2).Font.Bold = True
+            End If
+            checkRow = checkRow + 1
+        Next snKey
+
+        row = startRow + olpReadData.count
+    End If
+    
+    ws.Cells(row, col1).value = "Maximum"
+    If Not firstValue Then ws.Cells(row, col2).value = maxValue
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 218, 224)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Minimum"
+    If Not firstValue Then ws.Cells(row, col2).value = minValue
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    With ws.Range(ws.Cells(1, col1), ws.Cells(row, col2))
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+Sub CreateOneDynamicSection(ws As Worksheet, seqInfo As Object, lines() As String, unitCount As Long, startCol As Integer, snRowTarget As Long)
+    Dim row As Long, col1 As Integer, col2 As Integer
+    Dim seqTitle As String, seqStartLine As Long, params As Object
+    
+    seqTitle = seqInfo("title")
+    seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' ??????Χ???????
+    col1 = startCol
+    col2 = startCol + 1
+    
+    ws.Columns(col1).ColumnWidth = 18
+    ws.Columns(col2).ColumnWidth = 18
+    ws.Columns(col2 + 1).ColumnWidth = 18
+    ws.Columns(col2 + 2).ColumnWidth = 2
+    
+    row = 1
+    ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 1)).Merge
+    ws.Cells(row, col1).value = seqTitle
+    With ws.Cells(row, col1)
+        .Font.Size = 11
+        .Font.Bold = True
+        .Interior.Color = RGB(224, 255, 255)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+    End With
+    ws.Rows(row).RowHeight = 35
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Condition"
+    ws.Cells(row, col2).value = "Value"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(252, 228, 214)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    Dim actualLoadName As String
+    actualLoadName = params("LoadName")
+    
+    Dim paramNames As Variant, paramKeys As Variant, i As Integer
+    paramNames = Array("Vin", "Fin", _
+                       actualLoadName & "_Load Name", actualLoadName & "_MODE", actualLoadName & "_Ifs", actualLoadName & "_Vfs", _
+                       actualLoadName & "_Noise Filter", _
+                       actualLoadName & "_Period-1", actualLoadName & "_Period-2", _
+                       actualLoadName & "_Rise", actualLoadName & "_Fall", _
+                       actualLoadName & "_I/R-1", actualLoadName & "_I/R-2", _
+                       actualLoadName & "_Vs Max", actualLoadName & "_Vs Min")
+    paramKeys = Array("Vin", "Fin", "LoadName", "Mode", "Ifs", "Vfs", "NoiseFilter", _
+                      "Period1", "Period2", "Rise", "Fall", "IR1", "IR2", "VsMax", "VsMin")
+    
+    For i = 0 To UBound(paramNames)
+        ws.Cells(row, col1).value = paramNames(i)
+        ws.Cells(row, col2).value = params(paramKeys(i))
+        With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+            .Interior.Color = RGB(255, 242, 204)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+        row = row + 1
+    Next i
+    row = snRowTarget
+    ws.Cells(row, col1).value = "S/N"
+    ws.Cells(row, col2).value = actualLoadName & "_Vs-1 Rd"
+    ws.Cells(row, col2 + 1).value = actualLoadName & "_Vs-2 Rd"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(189, 215, 238)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    Dim readData As Object
+    Set readData = ExtractAllDynamicReads(lines, seqTitle)
+
+    Dim snKey As Variant, maxVs1Value As Double, minVs1Value As Double
+    Dim maxVs2Value As Double, minVs2Value As Double, firstValue As Boolean
+    firstValue = True
+
+    ' ========== ?u??G??Χ?q?}?C?g?J ==========
+    If readData.count > 0 Then
+        ' ??? 3 ??}?C (S/N, Vs1, Vs2)
+        Dim dataArray() As Variant
+        ReDim dataArray(1 To readData.count, 1 To 3)
+
+        Dim idx As Long
+        idx = 1
+        Dim startRow As Long
+        startRow = row
+
+        For Each snKey In readData.keys
+            Dim readValues As Object
+            Set readValues = readData(snKey)
+
+            ' ??R?}?C
+            dataArray(idx, 1) = snKey
+            dataArray(idx, 2) = readValues("Vs1")
+            dataArray(idx, 3) = readValues("Vs2")
+
+            ' ?p?? MAX/MIN?]??βM?z?????^
+            Dim cleanVs1 As String, cleanVs2 As String
+            cleanVs1 = CleanNumericValue(CStr(readValues("Vs1")))
+            cleanVs2 = CleanNumericValue(CStr(readValues("Vs2")))
+
+            Dim currentVs1 As Double, currentVs2 As Double
+            If IsNumeric(cleanVs1) And cleanVs1 <> "" Then
+                currentVs1 = CDbl(cleanVs1)
+                If firstValue Then
+                    maxVs1Value = currentVs1
+                    minVs1Value = currentVs1
+                Else
+                    If currentVs1 > maxVs1Value Then maxVs1Value = currentVs1
+                    If currentVs1 < minVs1Value Then minVs1Value = currentVs1
+                End If
+            End If
+
+            If IsNumeric(cleanVs2) And cleanVs2 <> "" Then
+                currentVs2 = CDbl(cleanVs2)
+                If firstValue Then
+                    maxVs2Value = currentVs2
+                    minVs2Value = currentVs2
+                    firstValue = False
+                Else
+                    If currentVs2 > maxVs2Value Then maxVs2Value = currentVs2
+                    If currentVs2 < minVs2Value Then minVs2Value = currentVs2
+                End If
+            End If
+
+            idx = idx + 1
+        Next snKey
+
+        ' ?@????g?J??????
+        ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + readData.count - 1, col2 + 1)).value = dataArray
+
+        ' ??q?]?w?榡
+        With ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + readData.count - 1, col2 + 1))
+            .Interior.Color = RGB(217, 225, 242)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' ??b???n???O???`??]????^
+        Dim checkRow As Long
+        checkRow = startRow
+        For Each snKey In readData.keys
+            Set readValues = readData(snKey)
+            If InStr(CStr(readValues("Vs1")), "?") > 0 Then
+                ws.Cells(checkRow, col2).Font.Color = RGB(255, 0, 0)
+                ws.Cells(checkRow, col2).Font.Bold = True
+            End If
+            If InStr(CStr(readValues("Vs2")), "?") > 0 Then
+                ws.Cells(checkRow, col2 + 1).Font.Color = RGB(255, 0, 0)
+                ws.Cells(checkRow, col2 + 1).Font.Bold = True
+            End If
+            checkRow = checkRow + 1
+        Next snKey
+
+        row = startRow + readData.count
+    End If
+    
+    ws.Cells(row, col1).value = "Maximum"
+    If Not firstValue Then
+        ws.Cells(row, col2).value = maxVs1Value
+        ws.Cells(row, col2 + 1).value = maxVs2Value
+    End If
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 218, 224)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Minimum"
+    If Not firstValue Then
+        ws.Cells(row, col2).value = minVs1Value
+        ws.Cells(row, col2 + 1).value = minVs2Value
+    End If
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    With ws.Range(ws.Cells(1, col1), ws.Cells(row, col2 + 1))
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+
+Sub CreateOneLoadRegulationSection(ws As Worksheet, seqInfo As Object, lines() As String, unitCount As Long, startCol As Integer, snRowTarget As Long)
+    Dim row As Long, col1 As Integer, col2 As Integer
+    Dim seqTitle As String, seqStartLine As Long, params As Object
+
+    seqTitle = seqInfo("title")
+    seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")
+    col1 = startCol
+    col2 = startCol + 1
+
+    ' ?]?w??e?G12 ???`?p (S/N + VdcRead1-3 + VppRead1-3 + VnRead1-3 + dV21 + dV31)
+    ws.Columns(col1).ColumnWidth = 14
+    Dim c As Integer
+    For c = col2 To col2 + 10
+        ws.Columns(c).ColumnWidth = 12
+    Next c
+    ws.Columns(col2 + 11).ColumnWidth = 2
+
+    ' ???D?C
+    row = 1
+    ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 10)).Merge
+    ws.Cells(row, col1).value = seqTitle
+    With ws.Cells(row, col1)
+        .Font.Size = 11
+        .Font.Bold = True
+        .Interior.Color = RGB(189, 215, 238)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+    End With
+    ws.Rows(row).RowHeight = 35
+    row = row + 1
+
+    ' Condition/Value ???D
+    ws.Cells(row, col1).value = "Condition"
+    ws.Cells(row, col2).value = "Value"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 224, 178)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+
+    Dim actualLoadName As String
+    actualLoadName = params("LoadName")
+
+    ' 19 ????]?w???? BITS-1?BBITS-2?BBITS-3?^
+    Dim paramNames As Variant, paramKeys As Variant, i As Integer
+    paramNames = Array("Vin", "Fin", "Delay Time", "Meas. Time", _
+                       actualLoadName & "_Load Name", actualLoadName & "_MODE", _
+                       actualLoadName & "_Ifs", actualLoadName & "_Vfs", actualLoadName & "_Meas", _
+                       actualLoadName & "_Vdc Filter", actualLoadName & "_Noise Filter", actualLoadName & "_Von", _
+                       actualLoadName & "_SLEW Rate", _
+                       actualLoadName & "_I/R-1", actualLoadName & "_I/R-2", actualLoadName & "_I/R-3", _
+                       actualLoadName & "_Vdc Max", actualLoadName & "_Vdc Min", actualLoadName & "_Vpp Max")
+    paramKeys = Array("Vin", "Fin", "DelayTime", "MeasTime", _
+                      "LoadName", "Mode", "Ifs", "Vfs", "Meas", _
+                      "VdcFilter", "NoiseFilter", "Von", _
+                      "SlewRate", _
+                      "IR1", "IR2", "IR3", _
+                      "VdcMax", "VdcMin", "VppMax")
+
+    For i = 0 To UBound(paramNames)
+        ws.Cells(row, col1).value = paramNames(i)
+        ws.Cells(row, col2).value = params(paramKeys(i))
+        With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+            .Interior.Color = RGB(255, 249, 196)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+        row = row + 1
+    Next i
+
+    ' S/N ??]????? snRowTarget?^
+    row = snRowTarget
+    ws.Cells(row, col1).value = "S/N"
+    ws.Cells(row, col2).value = actualLoadName & "_VdcRead1"
+    ws.Cells(row, col2 + 1).value = actualLoadName & "_VdcRead2"
+    ws.Cells(row, col2 + 2).value = actualLoadName & "_VdcRead3"
+    ws.Cells(row, col2 + 3).value = actualLoadName & "_VppRead1"
+    ws.Cells(row, col2 + 4).value = actualLoadName & "_VppRead2"
+    ws.Cells(row, col2 + 5).value = actualLoadName & "_VppRead3"
+    ws.Cells(row, col2 + 6).value = actualLoadName & "_VnRead1"
+    ws.Cells(row, col2 + 7).value = actualLoadName & "_VnRead2"
+    ws.Cells(row, col2 + 8).value = actualLoadName & "_VnRead3"
+    ws.Cells(row, col2 + 9).value = actualLoadName & "_dV21"
+    ws.Cells(row, col2 + 10).value = actualLoadName & "_dV31"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 10))
+        .Font.Bold = True
+        .Interior.Color = RGB(179, 229, 252)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+
+    ' ?????????
+    Dim readData As Object
+    Set readData = ExtractAllLoadRegulationReads(lines, seqTitle)
+
+    ' 11 ??W??? firstValue ??O?]??K??l????^
+    Dim firstVdc1 As Boolean, firstVdc2 As Boolean, firstVdc3 As Boolean
+    Dim firstVpp1 As Boolean, firstVpp2 As Boolean, firstVpp3 As Boolean
+    Dim firstVn1 As Boolean, firstVn2 As Boolean, firstVn3 As Boolean
+    Dim firstDv21 As Boolean, firstDv31 As Boolean
+    firstVdc1 = True: firstVdc2 = True: firstVdc3 = True
+    firstVpp1 = True: firstVpp2 = True: firstVpp3 = True
+    firstVn1 = True: firstVn2 = True: firstVn3 = True
+    firstDv21 = True: firstDv31 = True
+
+    Dim maxVdc1 As Double, minVdc1 As Double, maxVdc2 As Double, minVdc2 As Double, maxVdc3 As Double, minVdc3 As Double
+    Dim maxVpp1 As Double, minVpp1 As Double, maxVpp2 As Double, minVpp2 As Double, maxVpp3 As Double, minVpp3 As Double
+    Dim maxVn1 As Double, minVn1 As Double, maxVn2 As Double, minVn2 As Double, maxVn3 As Double, minVn3 As Double
+    Dim maxDv21 As Double, minDv21 As Double, maxDv31 As Double, minDv31 As Double
+
+    ' ??q?}?C?g?J?u??
+    If readData.count > 0 Then
+        Dim dataArray() As Variant
+        ReDim dataArray(1 To readData.count, 1 To 12)
+
+        Dim idx As Long, snKey As Variant
+        idx = 1
+        Dim startRow As Long
+        startRow = row
+
+        For Each snKey In readData.keys
+            Dim readVals As Object
+            Set readVals = readData(snKey)
+
+            dataArray(idx, 1) = snKey
+            dataArray(idx, 2) = readVals("VdcRead1")
+            dataArray(idx, 3) = readVals("VdcRead2")
+            dataArray(idx, 4) = readVals("VdcRead3")
+            dataArray(idx, 5) = readVals("VppRead1")
+            dataArray(idx, 6) = readVals("VppRead2")
+            dataArray(idx, 7) = readVals("VppRead3")
+            dataArray(idx, 8) = readVals("VnRead1")
+            dataArray(idx, 9) = readVals("VnRead2")
+            dataArray(idx, 10) = readVals("VnRead3")
+            dataArray(idx, 11) = readVals("dV21")
+            dataArray(idx, 12) = readVals("dV31")
+
+            ' ?p?? MAX/MIN?]??? CleanNumericValue?^
+            Dim cleanVal As String, currentVal As Double
+
+            ' VdcRead1
+            cleanVal = CleanNumericValue(CStr(readVals("VdcRead1")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstVdc1 Then
+                    maxVdc1 = currentVal: minVdc1 = currentVal: firstVdc1 = False
+                Else
+                    If currentVal > maxVdc1 Then maxVdc1 = currentVal
+                    If currentVal < minVdc1 Then minVdc1 = currentVal
+                End If
+            End If
+
+            ' VdcRead2
+            cleanVal = CleanNumericValue(CStr(readVals("VdcRead2")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstVdc2 Then
+                    maxVdc2 = currentVal: minVdc2 = currentVal: firstVdc2 = False
+                Else
+                    If currentVal > maxVdc2 Then maxVdc2 = currentVal
+                    If currentVal < minVdc2 Then minVdc2 = currentVal
+                End If
+            End If
+
+            ' VdcRead3
+            cleanVal = CleanNumericValue(CStr(readVals("VdcRead3")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstVdc3 Then
+                    maxVdc3 = currentVal: minVdc3 = currentVal: firstVdc3 = False
+                Else
+                    If currentVal > maxVdc3 Then maxVdc3 = currentVal
+                    If currentVal < minVdc3 Then minVdc3 = currentVal
+                End If
+            End If
+
+            ' VppRead1
+            cleanVal = CleanNumericValue(CStr(readVals("VppRead1")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstVpp1 Then
+                    maxVpp1 = currentVal: minVpp1 = currentVal: firstVpp1 = False
+                Else
+                    If currentVal > maxVpp1 Then maxVpp1 = currentVal
+                    If currentVal < minVpp1 Then minVpp1 = currentVal
+                End If
+            End If
+
+            ' VppRead2
+            cleanVal = CleanNumericValue(CStr(readVals("VppRead2")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstVpp2 Then
+                    maxVpp2 = currentVal: minVpp2 = currentVal: firstVpp2 = False
+                Else
+                    If currentVal > maxVpp2 Then maxVpp2 = currentVal
+                    If currentVal < minVpp2 Then minVpp2 = currentVal
+                End If
+            End If
+
+            ' VppRead3
+            cleanVal = CleanNumericValue(CStr(readVals("VppRead3")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstVpp3 Then
+                    maxVpp3 = currentVal: minVpp3 = currentVal: firstVpp3 = False
+                Else
+                    If currentVal > maxVpp3 Then maxVpp3 = currentVal
+                    If currentVal < minVpp3 Then minVpp3 = currentVal
+                End If
+            End If
+
+            ' VnRead1
+            cleanVal = CleanNumericValue(CStr(readVals("VnRead1")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstVn1 Then
+                    maxVn1 = currentVal: minVn1 = currentVal: firstVn1 = False
+                Else
+                    If currentVal > maxVn1 Then maxVn1 = currentVal
+                    If currentVal < minVn1 Then minVn1 = currentVal
+                End If
+            End If
+
+            ' VnRead2
+            cleanVal = CleanNumericValue(CStr(readVals("VnRead2")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstVn2 Then
+                    maxVn2 = currentVal: minVn2 = currentVal: firstVn2 = False
+                Else
+                    If currentVal > maxVn2 Then maxVn2 = currentVal
+                    If currentVal < minVn2 Then minVn2 = currentVal
+                End If
+            End If
+
+            ' VnRead3
+            cleanVal = CleanNumericValue(CStr(readVals("VnRead3")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstVn3 Then
+                    maxVn3 = currentVal: minVn3 = currentVal: firstVn3 = False
+                Else
+                    If currentVal > maxVn3 Then maxVn3 = currentVal
+                    If currentVal < minVn3 Then minVn3 = currentVal
+                End If
+            End If
+
+            ' dV21
+            cleanVal = CleanNumericValue(CStr(readVals("dV21")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstDv21 Then
+                    maxDv21 = currentVal: minDv21 = currentVal: firstDv21 = False
+                Else
+                    If currentVal > maxDv21 Then maxDv21 = currentVal
+                    If currentVal < minDv21 Then minDv21 = currentVal
+                End If
+            End If
+
+            ' dV31
+            cleanVal = CleanNumericValue(CStr(readVals("dV31")))
+            If IsNumeric(cleanVal) And cleanVal <> "" Then
+                currentVal = CDbl(cleanVal)
+                If firstDv31 Then
+                    maxDv31 = currentVal: minDv31 = currentVal: firstDv31 = False
+                Else
+                    If currentVal > maxDv31 Then maxDv31 = currentVal
+                    If currentVal < minDv31 Then minDv31 = currentVal
+                End If
+            End If
+
+            idx = idx + 1
+        Next snKey
+
+        ' ?@????g?J??????
+        ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + readData.count - 1, col2 + 10)).value = dataArray
+
+        ' ??q?]?w?榡
+        With ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + readData.count - 1, col2 + 10))
+            .Interior.Color = RGB(225, 245, 254)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' ??O???`??]???^??????
+        Dim checkRow As Long
+        checkRow = startRow
+        For Each snKey In readData.keys
+            Set readVals = readData(snKey)
+            Dim colOffset As Integer
+            For colOffset = 0 To 10
+                Dim cellVal As String
+                Select Case colOffset
+                    Case 0: cellVal = CStr(readVals("VdcRead1"))
+                    Case 1: cellVal = CStr(readVals("VdcRead2"))
+                    Case 2: cellVal = CStr(readVals("VdcRead3"))
+                    Case 3: cellVal = CStr(readVals("VppRead1"))
+                    Case 4: cellVal = CStr(readVals("VppRead2"))
+                    Case 5: cellVal = CStr(readVals("VppRead3"))
+                    Case 6: cellVal = CStr(readVals("VnRead1"))
+                    Case 7: cellVal = CStr(readVals("VnRead2"))
+                    Case 8: cellVal = CStr(readVals("VnRead3"))
+                    Case 9: cellVal = CStr(readVals("dV21"))
+                    Case 10: cellVal = CStr(readVals("dV31"))
+                End Select
+                If InStr(cellVal, "?") > 0 Then
+                    ws.Cells(checkRow, col2 + colOffset).Font.Color = RGB(255, 0, 0)
+                    ws.Cells(checkRow, col2 + colOffset).Font.Bold = True
+                End If
+            Next colOffset
+            checkRow = checkRow + 1
+        Next snKey
+
+        row = startRow + readData.count
+    End If
+
+    ' Maximum ??
+    ws.Cells(row, col1).value = "Maximum"
+    If Not firstVdc1 Then ws.Cells(row, col2).value = maxVdc1
+    If Not firstVdc2 Then ws.Cells(row, col2 + 1).value = maxVdc2
+    If Not firstVdc3 Then ws.Cells(row, col2 + 2).value = maxVdc3
+    If Not firstVpp1 Then ws.Cells(row, col2 + 3).value = maxVpp1
+    If Not firstVpp2 Then ws.Cells(row, col2 + 4).value = maxVpp2
+    If Not firstVpp3 Then ws.Cells(row, col2 + 5).value = maxVpp3
+    If Not firstVn1 Then ws.Cells(row, col2 + 6).value = maxVn1
+    If Not firstVn2 Then ws.Cells(row, col2 + 7).value = maxVn2
+    If Not firstVn3 Then ws.Cells(row, col2 + 8).value = maxVn3
+    If Not firstDv21 Then ws.Cells(row, col2 + 9).value = maxDv21
+    If Not firstDv31 Then ws.Cells(row, col2 + 10).value = maxDv31
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 10))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 218, 224)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+
+    ' Minimum ??
+    ws.Cells(row, col1).value = "Minimum"
+    If Not firstVdc1 Then ws.Cells(row, col2).value = minVdc1
+    If Not firstVdc2 Then ws.Cells(row, col2 + 1).value = minVdc2
+    If Not firstVdc3 Then ws.Cells(row, col2 + 2).value = minVdc3
+    If Not firstVpp1 Then ws.Cells(row, col2 + 3).value = minVpp1
+    If Not firstVpp2 Then ws.Cells(row, col2 + 4).value = minVpp2
+    If Not firstVpp3 Then ws.Cells(row, col2 + 5).value = minVpp3
+    If Not firstVn1 Then ws.Cells(row, col2 + 6).value = minVn1
+    If Not firstVn2 Then ws.Cells(row, col2 + 7).value = minVn2
+    If Not firstVn3 Then ws.Cells(row, col2 + 8).value = minVn3
+    If Not firstDv21 Then ws.Cells(row, col2 + 9).value = minDv21
+    If Not firstDv31 Then ws.Cells(row, col2 + 10).value = minDv31
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2 + 10))
+        .Font.Bold = True
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' ???
+    With ws.Range(ws.Cells(1, col1), ws.Cells(row, col2 + 10))
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+
+Sub CreateOneInputOutputSection(ws As Worksheet, seqInfo As Object, lines() As String, unitCount As Long, startCol As Integer, snRowTarget As Long)
+    Dim row As Long, col1 As Integer
+    Dim seqTitle As String, seqStartLine As Long, params As Object
+    
+    seqTitle = seqInfo("title")
+    seqStartLine = seqInfo("startLine")
+    Set params = seqInfo("params")  ' ??????Χ???????
+    col1 = startCol
+    
+    ws.Columns(col1).ColumnWidth = 18
+    Dim i As Integer
+    For i = 1 To 8
+        ws.Columns(col1 + i).ColumnWidth = 18
+    Next i
+    ws.Columns(col1 + 9).ColumnWidth = 2
+    
+    ' ========== ???D??]?O??????^==========
+    row = 1
+    ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 8)).Merge
+    ws.Cells(row, col1).value = seqTitle
+    With ws.Cells(row, col1)
+        .Font.Size = 11
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 235, 205)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .WrapText = True
+    End With
+    ws.Rows(row).RowHeight = 35
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Condition"
+    ws.Cells(row, col1 + 1).value = "Value"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(252, 228, 214)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ========== ????]???????^==========
+    Dim actualLoadName As String
+    actualLoadName = params("LoadName")
+    Dim seqType As String
+    seqType = seqInfo("type")
+    
+    ' ?? ??1?G??J?]?w?]?L???^
+    Dim group1Params As Variant, group1Keys As Variant
+    group1Params = Array("Vin", "Fin")
+    group1Keys = Array("Vin", "Fin")
+    Call AddParamGroupIO(ws, row, col1, col1 + 1, group1Params, group1Keys, params, RGB(232, 244, 248))
+    
+    ' ?? ??2?G?t?????]?L???^
+    Dim group2Params As Variant, group2Keys As Variant
+    group2Params = Array(actualLoadName & "_Load Name", actualLoadName & "_MODE", _
+                         actualLoadName & "_Ifs", actualLoadName & "_Vfs")
+    group2Keys = Array("LoadName", "Mode", "Ifs", "Vfs")
+    Call AddParamGroupIO(ws, row, col1, col1 + 1, group2Params, group2Keys, params, RGB(232, 248, 240))
+    
+    ' ?? ??3?G?o?i?]?w?]?L????^
+    Dim group3Params As Variant, group3Keys As Variant
+    group3Params = Array(actualLoadName & "_Noise Filter")
+    group3Keys = Array("NoiseFilter")
+    Call AddParamGroupIO(ws, row, col1, col1 + 1, group3Params, group3Keys, params, RGB(255, 249, 230))
+    
+    ' ?? ??4?G????W??]?L????^
+    Dim group4Params As Variant, group4Keys As Variant
+    If seqType = "InputOutput_Iin" Or seqType = "InputOutput_General" Then
+        If seqType = "InputOutput_General" Then
+            group4Params = Array(actualLoadName & "_Iinrms Max", actualLoadName & "_I/R")
+            group4Keys = Array("IinrmsMax", "IR")
+        Else
+            group4Params = Array(actualLoadName & "_Iinrms Max", actualLoadName & "_I/R")
+            group4Keys = Array("IinrmsMax", "IR")
+        End If
+    ElseIf seqType = "InputOutput_Pin" Then
+        group4Params = Array(actualLoadName & "_Pin Max", actualLoadName & "_I/R")
+        group4Keys = Array("PinMax", "IR")
+    ElseIf seqType = "InputOutput_Eff" Then
+        group4Params = Array(actualLoadName & "_Eff Min", actualLoadName & "_I/R")
+        group4Keys = Array("EffMin", "IR")
+    End If
+    Call AddParamGroupIO(ws, row, col1, col1 + 1, group4Params, group4Keys, params, RGB(255, 232, 214))
+    
+    ' ?? ??5?G?q???W??]?L????^
+    Dim group5Params As Variant, group5Keys As Variant
+    If seqType = "InputOutput_General" Or seqType = "InputOutput_Eff" Then
+        ' ===== Eff ?M General ????????? Vin Max/Min =====
+        group5Params = Array(actualLoadName & "_Vin Max", actualLoadName & "_Vin Min", _
+                            actualLoadName & "_Vdc Max", actualLoadName & "_Vdc Min", _
+                            actualLoadName & "_Vpp Max")
+        group5Keys = Array("VinMax", "VinMin", "VdcMax", "VdcMin", "VppMax")
+    Else
+        ' Iin ?M Pin ?????u??? Vdc/Vpp
+        group5Params = Array(actualLoadName & "_Vdc Max", actualLoadName & "_Vdc Min", _
+                            actualLoadName & "_Vpp Max")
+        group5Keys = Array("VdcMax", "VdcMin", "VppMax")
+    End If
+    Call AddParamGroupIO(ws, row, col1, col1 + 1, group5Params, group5Keys, params, RGB(255, 232, 240))
+    
+    ' ========== ????]Load Name ?e??^==========
+    row = snRowTarget
+    Dim loadPrefix As String
+    loadPrefix = actualLoadName & "_"  ' ??p?G"5.3_"
+
+    ws.Cells(row, col1).value = "S/N"
+    ws.Cells(row, col1 + 1).value = loadPrefix & "Iinrms"
+    ws.Cells(row, col1 + 2).value = loadPrefix & "Pin"
+    ws.Cells(row, col1 + 3).value = loadPrefix & "Pdc"
+    ws.Cells(row, col1 + 4).value = loadPrefix & "Eff"
+    ws.Cells(row, col1 + 5).value = loadPrefix & "Pf"
+
+    If seqType = "InputOutput_General" Then
+        ws.Cells(row, col1 + 6).value = loadPrefix & "Vin Read"
+    Else
+        ws.Cells(row, col1 + 6).value = loadPrefix & "Idc Read"
+    End If
+
+    ws.Cells(row, col1 + 7).value = loadPrefix & "Vdc Read"
+    ws.Cells(row, col1 + 8).value = loadPrefix & "Vpp Read"
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 8))
+        .Font.Bold = True
+        .Interior.Color = RGB(189, 215, 238)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ' ?????]??q?g?J?u??^
+    Dim ioData As Object
+    Set ioData = ExtractAllInputOutputReads(lines, seqTitle, seqType)
+
+    Dim maxIinrms As Double, minIinrms As Double
+    Dim maxPin As Double, minPin As Double
+    Dim maxPdc As Double, minPdc As Double
+    Dim maxEff As Double, minEff As Double
+    Dim maxPf As Double, minPf As Double
+    Dim maxIdc As Double, minIdc As Double
+    Dim maxVdc As Double, minVdc As Double
+    Dim maxVpp As Double, minVpp As Double
+    Dim firstValue As Boolean
+    firstValue = True
+
+    Dim snKey As Variant
+
+    ' ========== ?u??G??Χ?q?}?C?g?J ==========
+    If ioData.count > 0 Then
+        ' ??? 9 ??}?C (S/N + 8 ???)
+        Dim dataArray() As Variant
+        ReDim dataArray(1 To ioData.count, 1 To 9)
+
+        Dim idx As Long
+        idx = 1
+        Dim startRow As Long
+        startRow = row
+
+        For Each snKey In ioData.keys
+            Dim readVals As Object
+            Set readVals = ioData(snKey)
+
+            ' ??R?}?C
+            dataArray(idx, 1) = snKey
+            dataArray(idx, 2) = readVals("Iinrms")
+            dataArray(idx, 3) = readVals("Pin")
+            dataArray(idx, 4) = readVals("Pdc")
+            dataArray(idx, 5) = readVals("Eff")
+            dataArray(idx, 6) = readVals("Pf")
+
+            ' ?? 6 ???????????P
+            If seqType = "InputOutput_General" Then
+                dataArray(idx, 7) = readVals("VinRead")
+            Else
+                dataArray(idx, 7) = readVals("Idc")
+            End If
+
+            dataArray(idx, 8) = readVals("Vdc")
+            dataArray(idx, 9) = readVals("Vpp")
+
+            ' ?M?z???ip???j??p??
+            Dim cleanIinrms As String, cleanPin As String, cleanPdc As String
+            Dim cleanEff As String, cleanPf As String, cleanIdc As String
+            Dim cleanVdc As String, cleanVpp As String
+
+            cleanIinrms = CleanNumericValue(CStr(readVals("Iinrms")))
+            cleanPin = CleanNumericValue(CStr(readVals("Pin")))
+            cleanPdc = CleanNumericValue(CStr(readVals("Pdc")))
+            cleanEff = CleanNumericValue(CStr(readVals("Eff")))
+            cleanPf = CleanNumericValue(CStr(readVals("Pf")))
+            cleanIdc = CleanNumericValue(CStr(readVals("Idc")))
+            cleanVdc = CleanNumericValue(CStr(readVals("Vdc")))
+            cleanVpp = CleanNumericValue(CStr(readVals("Vpp")))
+
+            If IsNumeric(cleanIinrms) And cleanIinrms <> "" Then
+                If firstValue Then
+                    maxIinrms = CDbl(cleanIinrms): minIinrms = CDbl(cleanIinrms)
+                    If IsNumeric(cleanPin) And cleanPin <> "" Then maxPin = CDbl(cleanPin): minPin = CDbl(cleanPin)
+                    If IsNumeric(cleanPdc) And cleanPdc <> "" Then maxPdc = CDbl(cleanPdc): minPdc = CDbl(cleanPdc)
+                    If IsNumeric(cleanEff) And cleanEff <> "" Then maxEff = CDbl(cleanEff): minEff = CDbl(cleanEff)
+                    If IsNumeric(cleanPf) And cleanPf <> "" Then maxPf = CDbl(cleanPf): minPf = CDbl(cleanPf)
+                    If IsNumeric(cleanIdc) And cleanIdc <> "" Then maxIdc = CDbl(cleanIdc): minIdc = CDbl(cleanIdc)
+                    If IsNumeric(cleanVdc) And cleanVdc <> "" Then maxVdc = CDbl(cleanVdc): minVdc = CDbl(cleanVdc)
+                    If IsNumeric(cleanVpp) And cleanVpp <> "" Then maxVpp = CDbl(cleanVpp): minVpp = CDbl(cleanVpp)
+                    firstValue = False
+                Else
+                    If IsNumeric(cleanIinrms) And cleanIinrms <> "" Then
+                        If CDbl(cleanIinrms) > maxIinrms Then maxIinrms = CDbl(cleanIinrms)
+                        If CDbl(cleanIinrms) < minIinrms Then minIinrms = CDbl(cleanIinrms)
+                    End If
+                    If IsNumeric(cleanPin) And cleanPin <> "" Then
+                        If CDbl(cleanPin) > maxPin Then maxPin = CDbl(cleanPin)
+                        If CDbl(cleanPin) < minPin Then minPin = CDbl(cleanPin)
+                    End If
+                    If IsNumeric(cleanPdc) And cleanPdc <> "" Then
+                        If CDbl(cleanPdc) > maxPdc Then maxPdc = CDbl(cleanPdc)
+                        If CDbl(cleanPdc) < minPdc Then minPdc = CDbl(cleanPdc)
+                    End If
+                    If IsNumeric(cleanEff) And cleanEff <> "" Then
+                        If CDbl(cleanEff) > maxEff Then maxEff = CDbl(cleanEff)
+                        If CDbl(cleanEff) < minEff Then minEff = CDbl(cleanEff)
+                    End If
+                    If IsNumeric(cleanPf) And cleanPf <> "" Then
+                        If CDbl(cleanPf) > maxPf Then maxPf = CDbl(cleanPf)
+                        If CDbl(cleanPf) < minPf Then minPf = CDbl(cleanPf)
+                    End If
+                    If IsNumeric(cleanIdc) And cleanIdc <> "" Then
+                        If CDbl(cleanIdc) > maxIdc Then maxIdc = CDbl(cleanIdc)
+                        If CDbl(cleanIdc) < minIdc Then minIdc = CDbl(cleanIdc)
+                    End If
+                    If IsNumeric(cleanVdc) And cleanVdc <> "" Then
+                        If CDbl(cleanVdc) > maxVdc Then maxVdc = CDbl(cleanVdc)
+                        If CDbl(cleanVdc) < minVdc Then minVdc = CDbl(cleanVdc)
+                    End If
+                    If IsNumeric(cleanVpp) And cleanVpp <> "" Then
+                        If CDbl(cleanVpp) > maxVpp Then maxVpp = CDbl(cleanVpp)
+                        If CDbl(cleanVpp) < minVpp Then minVpp = CDbl(cleanVpp)
+                    End If
+                End If
+            End If
+
+            idx = idx + 1
+        Next snKey
+
+        ' ?@????g?J??????
+        ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + ioData.count - 1, col1 + 8)).value = dataArray
+
+        ' ??q?]?w?榡
+        With ws.Range(ws.Cells(startRow, col1), ws.Cells(startRow + ioData.count - 1, col1 + 8))
+            .Interior.Color = RGB(217, 225, 242)
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+        End With
+
+        ' ??b???n???O???`??]????^??????????w????
+        Dim checkRow As Long
+        checkRow = startRow
+        For Each snKey In ioData.keys
+            Set readVals = ioData(snKey)  ' ???o??????
+
+            ' ??? 8 ????r??
+            Dim colOffset As Integer
+            For colOffset = 0 To 7
+                Dim cellVal As String
+                Select Case colOffset
+                    Case 0: cellVal = CStr(readVals("Iinrms"))
+                    Case 1: cellVal = CStr(readVals("Pin"))
+                    Case 2: cellVal = CStr(readVals("Pdc"))
+                    Case 3: cellVal = CStr(readVals("Eff"))
+                    Case 4: cellVal = CStr(readVals("Pf"))
+                    Case 5:
+                        If seqType = "InputOutput_General" Then
+                            cellVal = CStr(readVals("VinRead"))
+                        Else
+                            cellVal = CStr(readVals("Idc"))
+                        End If
+                    Case 6: cellVal = CStr(readVals("Vdc"))
+                    Case 7: cellVal = CStr(readVals("Vpp"))
+                End Select
+
+                If InStr(cellVal, "?") > 0 Then
+                    ws.Cells(checkRow, col1 + 1 + colOffset).Font.Color = RGB(255, 0, 0)
+                    ws.Cells(checkRow, col1 + 1 + colOffset).Font.Bold = True
+                End If
+            Next colOffset
+
+            checkRow = checkRow + 1
+        Next snKey
+
+        row = startRow + ioData.count
+    End If
+    
+    ws.Cells(row, col1).value = "Maximum"
+    If Not firstValue Then
+        ws.Cells(row, col1 + 1).value = maxIinrms
+        ws.Cells(row, col1 + 2).value = maxPin
+        ws.Cells(row, col1 + 3).value = maxPdc
+        ws.Cells(row, col1 + 4).value = maxEff
+        ws.Cells(row, col1 + 5).value = maxPf
+        ws.Cells(row, col1 + 6).value = maxIdc
+        ws.Cells(row, col1 + 7).value = maxVdc
+        ws.Cells(row, col1 + 8).value = maxVpp
+    End If
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 8))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 218, 224)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    row = row + 1
+    
+    ws.Cells(row, col1).value = "Minimum"
+    If Not firstValue Then
+        ws.Cells(row, col1 + 1).value = minIinrms
+        ws.Cells(row, col1 + 2).value = minPin
+        ws.Cells(row, col1 + 3).value = minPdc
+        ws.Cells(row, col1 + 4).value = minEff
+        ws.Cells(row, col1 + 5).value = minPf
+        ws.Cells(row, col1 + 6).value = minIdc
+        ws.Cells(row, col1 + 7).value = minVdc
+        ws.Cells(row, col1 + 8).value = minVpp
+    End If
+    With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 8))
+        .Font.Bold = True
+        .Interior.Color = RGB(198, 224, 180)
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    With ws.Range(ws.Cells(1, col1), ws.Cells(row, col1 + 8))
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+End Sub
+
+Function ExtractOLPParams(lines() As String, startLine As Long, loadName As String) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+    
+    params.Add "Vin", ""
+    params.Add "Fin", ""
+    params.Add "TestOnLoad", ""
+    params.Add "LoadName", loadName
+    params.Add "Mode", ""
+    params.Add "Ifs", ""
+    params.Add "Vfs", ""
+    params.Add "IR", ""
+    params.Add "TripPointMax", ""
+    params.Add "TripPointMin", ""
+    
+    Dim i As Long, lineText As String, parts() As String
+    Dim foundLoadParams As Boolean
+    foundLoadParams = False
+    
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+    
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+        
+        If InStr(lineText, "Vin") > 0 And InStr(lineText, "Fin") > 0 And InStr(lineText, "Vin Port") = 0 Then
+            params("Vin") = ExtractNumericValue(lineText, "Vin")
+            params("Fin") = ExtractNumericValue(lineText, "Fin")
+        End If
+        
+        If InStr(lineText, "Test on LOAD") > 0 Then
+            Dim colonPos As Long
+            colonPos = InStr(lineText, ":")
+            If colonPos > 0 Then
+                Dim loadValue As String
+                loadValue = Trim(Mid(lineText, colonPos + 1))
+                Dim j As Long
+                Dim numStr As String
+                numStr = ""
+                For j = 1 To Len(loadValue)
+                    If Mid(loadValue, j, 1) >= "0" And Mid(loadValue, j, 1) <= "9" Then
+                        numStr = numStr & Mid(loadValue, j, 1)
+                    ElseIf numStr <> "" Then
+                        Exit For
+                    End If
+                Next j
+                If numStr <> "" Then params("TestOnLoad") = numStr
+            End If
+        End If
+        
+        If InStr(lineText, "Load Name") > 0 And InStr(lineText, "MODE") > 0 And Not foundLoadParams Then
+            If i + 1 <= seqEndLine Then
+                Dim nextLine As String
+                nextLine = lines(i + 1)
+                If Trim(Left(nextLine, 2)) = "1." Then
+                    parts = SplitLine(nextLine)
+                    If UBound(parts) >= 2 Then
+                        params("Mode") = parts(2)
+                    End If
+                    If UBound(parts) >= 3 Then
+                        params("Ifs") = parts(3)
+                    End If
+                    If UBound(parts) >= 4 Then
+                        params("Vfs") = parts(4)
+                    End If
+                    If UBound(parts) >= 9 Then
+                        params("IR") = parts(9)
+                    ElseIf UBound(parts) >= 8 Then
+                        params("IR") = parts(8)
+                    End If
+                    foundLoadParams = True
+                End If
+            End If
+        End If
+        
+        If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And InStr(lineText, "Reading") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim tripLine As String
+                tripLine = lines(i + 1)
+                If InStr(Trim(tripLine), "Trip Point") = 1 Then
+                    parts = SplitLine(tripLine)
+                    If UBound(parts) >= 3 Then
+                        If parts(0) = "Trip" And UBound(parts) >= 4 Then
+                            params("TripPointMax") = parts(2)
+                            params("TripPointMin") = parts(3)
+                        ElseIf UBound(parts) >= 3 Then
+                            params("TripPointMax") = parts(1)
+                            params("TripPointMin") = parts(2)
+                        End If
+                    End If
+                End If
+            End If
+        End If
+    Next i
+    
+    Set ExtractOLPParams = params
+End Function
+
+Function ExtractAllOLPReads(lines() As String, seqTitle As String) As Object
+    Dim olpReads As Object
+    Set olpReads = CreateObject("Scripting.Dictionary")
+    
+    Dim i As Long, currentSerial As String, inTargetSeq As Boolean
+    Dim lineText As String, parts() As String, seqStartLine As Long, seqEndLine As Long
+    
+    currentSerial = ""
+    inTargetSeq = False
+    seqStartLine = -1
+    
+    For i = 0 To UBound(lines)
+        lineText = lines(i)
+        
+        If InStr(lineText, "Serial No") > 0 Then
+            currentSerial = ExtractSerialNumber(lineText)
+        End If
+        
+        ' 雙重檢查: 必須是 SEQ 標題行 且 SEQ 編號匹配 (避免 PASS/FAIL 影響)
+        If InStr(lineText, "SEQ.") > 0 And InStr(lineText, ExtractSeqNumber(seqTitle)) > 0 Then
+            inTargetSeq = True
+            seqStartLine = i
+            seqEndLine = i + 50
+            Dim j As Long
+            For j = i + 1 To UBound(lines)
+                If InStr(lines(j), "SEQ.") > 0 Then
+                    seqEndLine = j - 1
+                    Exit For
+                End If
+            Next j
+        End If
+        
+        If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
+            If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And InStr(lineText, "Reading") > 0 Then
+                If i + 1 <= seqEndLine Then
+                    Dim readLine As String
+                    readLine = lines(i + 1)
+                    If InStr(Trim(readLine), "Trip Point") = 1 Then
+                        parts = SplitLine(readLine)
+                        If Not olpReads.exists(currentSerial) Then
+                            If parts(0) = "Trip" And UBound(parts) >= 4 Then
+                                olpReads.Add currentSerial, parts(4)
+                            ElseIf UBound(parts) >= 3 Then
+                                olpReads.Add currentSerial, parts(3)
+                            End If
+                        End If
+                    End If
+                End If
+            End If
+        End If
+        
+        If inTargetSeq And i > seqEndLine Then
+            inTargetSeq = False
+        End If
+    Next i
+    
+    Set ExtractAllOLPReads = olpReads
+End Function
+
+Function ExtractCombineParams(lines() As String, startLine As Long, loadName As String) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+    
+    params.Add "Vin1", ""
+    params.Add "Fac1", ""
+    params.Add "Vin2", ""
+    params.Add "Fac2", ""
+    params.Add "Vin3", ""
+    params.Add "Fac3", ""
+    params.Add "LoadName", loadName
+    params.Add "Mode", ""
+    params.Add "Ifs", ""
+    params.Add "Vfs", ""
+    params.Add "NoiseFilter", ""
+    params.Add "IR1", ""
+    params.Add "IR2", ""
+    params.Add "IR3", ""
+    params.Add "VdcMax", ""
+    params.Add "VdcMin", ""
+    params.Add "VppMax", ""
+    
+    Dim i As Long, lineText As String, parts() As String
+    Dim foundLoadLine As Boolean, foundBitsLine As Boolean
+    foundLoadLine = False
+    foundBitsLine = False
+    
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+    
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+        
+        If InStr(lineText, "Vin Port-1") > 0 And InStr(lineText, "Vin Port-2") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim vinLine As String
+                vinLine = lines(i + 1)
+                If InStr(vinLine, "Vin-1") > 0 Then
+                    params("Vin1") = ExtractNumericValue(vinLine, "Vin-1")
+                    params("Vin2") = ExtractNumericValue(vinLine, "Vin-2")
+                    params("Vin3") = ExtractNumericValue(vinLine, "Vin-3")
+                End If
+            End If
+        End If
+        
+        If InStr(lineText, "Fac") > 0 And InStr(lineText, "Fac-2") > 0 Then
+            params("Fac1") = ExtractNumericValue(lineText, "Fac")
+            params("Fac2") = ExtractNumericValue(lineText, "Fac-2")
+            params("Fac3") = ExtractNumericValue(lineText, "Fac-3")
+        End If
+        
+        If InStr(lineText, "Load Name") > 0 And InStr(lineText, "MODE") > 0 And InStr(lineText, "Ifs") > 0 And Not foundLoadLine Then
+            If i + 1 <= seqEndLine Then
+                Dim loadLine As String
+                loadLine = lines(i + 1)
+                If Trim(Left(loadLine, 2)) = "1." Then
+                    parts = SplitLine(loadLine)
+                    If UBound(parts) >= 7 Then
+                        params("Mode") = parts(2)
+                        params("Ifs") = parts(3)
+                        params("Vfs") = parts(4)
+                        params("NoiseFilter") = parts(7)
+                        foundLoadLine = True
+                    End If
+                End If
+            End If
+        End If
+        
+        If InStr(lineText, "BITS-1") > 0 And InStr(lineText, "BITS-2") > 0 And Not foundBitsLine Then
+            If i + 1 <= seqEndLine Then
+                Dim irLine As String
+                irLine = lines(i + 1)
+                If Trim(Left(irLine, 2)) = "1." Then
+                    parts = SplitLine(irLine)
+                    If UBound(parts) >= 7 Then
+                        params("IR1") = parts(5)
+                        params("IR2") = parts(6)
+                        params("IR3") = parts(7)
+                        foundBitsLine = True
+                    End If
+                End If
+            End If
+        End If
+        
+        If InStr(lineText, "Vdc Max") > 0 And InStr(lineText, "Vdc Min") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim vdcLine As String
+                vdcLine = lines(i + 1)
+                If Trim(Left(vdcLine, 2)) = "1." Then
+                    parts = SplitLine(vdcLine)
+                    If UBound(parts) >= 2 Then
+                        params("VdcMax") = parts(1)
+                        params("VdcMin") = parts(2)
+                    End If
+                End If
+            End If
+        End If
+        
+        If InStr(lineText, "Vpp Max") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim vppLine As String
+                vppLine = lines(i + 1)
+                If Trim(Left(vppLine, 2)) = "1." Then
+                    parts = SplitLine(vppLine)
+                    If UBound(parts) >= 1 Then
+                        params("VppMax") = parts(1)
+                    End If
+                End If
+            End If
+        End If
+    Next i
+    
+    Set ExtractCombineParams = params
+End Function
+
+Function ExtractAllCombineReads(lines() As String, seqTitle As String) As Object
+    Dim combineData As Object
+    Set combineData = CreateObject("Scripting.Dictionary")
+    
+    Dim i As Long, currentSerial As String, inTargetSeq As Boolean
+    Dim lineText As String, parts() As String, seqStartLine As Long, seqEndLine As Long
+    
+    currentSerial = ""
+    inTargetSeq = False
+    seqStartLine = -1
+    
+    For i = 0 To UBound(lines)
+        lineText = lines(i)
+        
+        If InStr(lineText, "Serial No") > 0 Then
+            currentSerial = ExtractSerialNumber(lineText)
+        End If
+        
+        ' 雙重檢查: 必須是 SEQ 標題行 且 SEQ 編號匹配 (避免 PASS/FAIL 影響)
+        If InStr(lineText, "SEQ.") > 0 And InStr(lineText, ExtractSeqNumber(seqTitle)) > 0 Then
+            inTargetSeq = True
+            seqStartLine = i
+            seqEndLine = i + 50
+            Dim j As Long
+            For j = i + 1 To UBound(lines)
+                If InStr(lines(j), "SEQ.") > 0 Then
+                    seqEndLine = j - 1
+                    Exit For
+                End If
+            Next j
+        End If
+        
+        If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
+            If InStr(lineText, "Vdc Max") > 0 And InStr(lineText, "Vdc-1 RD") > 0 Then
+                If i + 1 <= seqEndLine Then
+                    Dim vdcLine As String
+                    vdcLine = lines(i + 1)
+                    If Trim(Left(vdcLine, 2)) = "1." Then
+                        parts = SplitLine(vdcLine)
+                        If UBound(parts) >= 5 And Not combineData.exists(currentSerial) Then
+                            Dim readings As Object
+                            Set readings = CreateObject("Scripting.Dictionary")
+                            readings.Add "Vdc1", parts(3)
+                            readings.Add "Vdc2", parts(4)
+                            readings.Add "Vdc3", parts(5)
+                            readings.Add "Vpp1", ""
+                            readings.Add "Vpp2", ""
+                            readings.Add "Vpp3", ""
+                            combineData.Add currentSerial, readings
+                        End If
+                    End If
+                End If
+            End If
+            
+            If InStr(lineText, "Vpp Max") > 0 And InStr(lineText, "Vpp-1 RD") > 0 Then
+                If i + 1 <= seqEndLine Then
+                    Dim vppLine As String
+                    vppLine = lines(i + 1)
+                    If Trim(Left(vppLine, 2)) = "1." Then
+                        parts = SplitLine(vppLine)
+                        If UBound(parts) >= 5 Then
+                            If combineData.exists(currentSerial) Then
+                                combineData(currentSerial)("Vpp1") = parts(3)
+                                combineData(currentSerial)("Vpp2") = parts(4)
+                                combineData(currentSerial)("Vpp3") = parts(5)
+                            End If
+                        End If
+                    End If
+                End If
+            End If
+        End If
+        
+        If inTargetSeq And i > seqEndLine Then
+            inTargetSeq = False
+        End If
+    Next i
+    
+    Set ExtractAllCombineReads = combineData
+End Function
+
+Function ExtractShortCircuitParams(lines() As String, startLine As Long, loadName As String) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+    
+    params.Add "Vin", ""
+    params.Add "Fin", ""
+    params.Add "WhichLoad", ""
+    params.Add "LoadName", loadName
+    params.Add "Mode", ""
+    params.Add "Ifs", ""
+    params.Add "Vfs", ""
+    params.Add "IR", ""
+    
+    Dim i As Long, lineText As String, parts() As String
+    Dim foundParams As Boolean
+    foundParams = False
+    
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+    
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+        
+        If InStr(lineText, "Vin") > 0 And InStr(lineText, "Fin") > 0 And InStr(lineText, "Delay Time") > 0 Then
+            params("Vin") = ExtractNumericValue(lineText, "Vin")
+            params("Fin") = ExtractNumericValue(lineText, "Fin")
+        End If
+        
+        If InStr(lineText, "Which Load") > 0 Then
+            params("WhichLoad") = ExtractNumericValue(lineText, "Which Load")
+        End If
+        
+        If InStr(lineText, "Load Name") > 0 And InStr(lineText, "MODE") > 0 And Not foundParams Then
+            If i + 1 <= seqEndLine Then
+                Dim nextLine As String
+                nextLine = lines(i + 1)
+                If Trim(Left(nextLine, 2)) = "1." Then
+                    parts = SplitLine(nextLine)
+                    If UBound(parts) >= 2 Then
+                        params("Mode") = parts(2)
+                    End If
+                    If UBound(parts) >= 3 Then
+                        params("Ifs") = parts(3)
+                    End If
+                    If UBound(parts) >= 4 Then
+                        params("Vfs") = parts(4)
+                    End If
+                    If UBound(parts) >= 9 Then
+                        params("IR") = parts(9)
+                    ElseIf UBound(parts) >= 8 Then
+                        params("IR") = parts(8)
+                    End If
+                    foundParams = True
+                End If
+            End If
+        End If
+    Next i
+    
+    Set ExtractShortCircuitParams = params
+End Function
+
+Function ExtractAllPinReads(lines() As String, seqTitle As String) As Object
+    Dim pinReads As Object
+    Set pinReads = CreateObject("Scripting.Dictionary")
+    
+    Dim i As Long, currentSerial As String, inTargetSeq As Boolean
+    Dim lineText As String, seqStartLine As Long, seqEndLine As Long
+    
+    currentSerial = ""
+    inTargetSeq = False
+    seqStartLine = -1
+    
+    For i = 0 To UBound(lines)
+        lineText = lines(i)
+        
+        If InStr(lineText, "Serial No") > 0 Then
+            currentSerial = ExtractSerialNumber(lineText)
+        End If
+        
+        ' 雙重檢查: 必須是 SEQ 標題行 且 SEQ 編號匹配 (避免 PASS/FAIL 影響)
+        If InStr(lineText, "SEQ.") > 0 And InStr(lineText, ExtractSeqNumber(seqTitle)) > 0 Then
+            inTargetSeq = True
+            seqStartLine = i
+            seqEndLine = i + 50
+            Dim j As Long
+            For j = i + 1 To UBound(lines)
+                If InStr(lines(j), "SEQ.") > 0 Then
+                    seqEndLine = j - 1
+                    Exit For
+                End If
+            Next j
+        End If
+        
+        If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
+            If InStr(lineText, "Pin") > 0 And Left(Trim(lineText), 3) = "Pin" Then
+                Dim pinValue As String
+                pinValue = ExtractReadingAfterStars(lineText)
+                If pinValue <> "" And Not pinReads.exists(currentSerial) Then
+                    pinReads.Add currentSerial, pinValue
+                End If
+            End If
+        End If
+        
+        If inTargetSeq And i > seqEndLine Then
+            inTargetSeq = False
+        End If
+    Next i
+    
+    Set ExtractAllPinReads = pinReads
+End Function
+
+Function ExtractHoldUpParams(lines() As String, startLine As Long, loadName As String) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+    
+    params.Add "Vin", ""
+    params.Add "Fin", ""
+    params.Add "LoadName", loadName
+    params.Add "Mode", ""
+    params.Add "Ifs", ""
+    params.Add "Vfs", ""
+    params.Add "Von", ""
+    params.Add "IR", ""
+    params.Add "Va", ""
+    params.Add "ThdMin", ""
+    
+    Dim i As Long, lineText As String, parts() As String
+    
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+    
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+        
+        If InStr(lineText, "Vin") > 0 And InStr(lineText, "Fin") > 0 And InStr(lineText, "Delay Time") > 0 Then
+            params("Vin") = ExtractNumericValue(lineText, "Vin")
+            params("Fin") = ExtractNumericValue(lineText, "Fin")
+        End If
+        
+        If Trim(Left(lineText, 2)) = "1." And InStr(lineText, "Load Name") = 0 And InStr(lineText, "TRIGG") = 0 Then
+            parts = SplitLine(lineText)
+            If UBound(parts) >= 9 Then
+                params("Mode") = parts(2)
+                params("Ifs") = parts(3)
+                params("Vfs") = parts(4)
+                params("Von") = parts(6)
+                params("IR") = parts(9)
+            End If
+        End If
+        
+        If InStr(lineText, "Va") > 0 And InStr(lineText, "Vb") > 0 And InStr(lineText, "TRIGG") > 0 Then
+            If i + 2 <= seqEndLine Then
+                Dim vaVbLine As String
+                vaVbLine = lines(i + 2)
+                If Trim(Left(vaVbLine, 2)) = "1." Then
+                    Dim vaParts() As String
+                    vaParts = SplitLine(vaVbLine)
+                    If UBound(vaParts) >= 6 Then
+                        params("Va") = vaParts(5)
+                    ElseIf UBound(vaParts) >= 5 Then
+                        params("Va") = vaParts(5)
+                    End If
+                End If
+            End If
+        End If
+        
+        If InStr(lineText, "Thd Max") > 0 And InStr(lineText, "Thd Min") > 0 And InStr(lineText, "Thd Read") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim thdLine As String
+                thdLine = lines(i + 1)
+                If Trim(Left(thdLine, 3)) = "Ld" Or Trim(Left(thdLine, 2)) = "1." Then
+                    parts = SplitLine(thdLine)
+                    If UBound(parts) >= 2 Then
+                        params("ThdMin") = parts(2)
+                    End If
+                End If
+            End If
+        End If
+    Next i
+    
+    Set ExtractHoldUpParams = params
+End Function
+
+Function ExtractAllHoldUpReads(lines() As String, seqTitle As String) As Object
+    Dim readData As Object
+    Set readData = CreateObject("Scripting.Dictionary")
+    
+    Dim i As Long, currentSerial As String, inTargetSeq As Boolean
+    Dim lineText As String, seqStartLine As Long, seqEndLine As Long
+    
+    currentSerial = ""
+    inTargetSeq = False
+    seqStartLine = -1
+    
+    For i = 0 To UBound(lines)
+        lineText = lines(i)
+        
+        If InStr(lineText, "Serial No") > 0 Then
+            currentSerial = ExtractSerialNumber(lineText)
+        End If
+        
+        ' 雙重檢查: 必須是 SEQ 標題行 且 SEQ 編號匹配 (避免 PASS/FAIL 影響)
+        If InStr(lineText, "SEQ.") > 0 And InStr(lineText, ExtractSeqNumber(seqTitle)) > 0 Then
+            inTargetSeq = True
+            seqStartLine = i
+            seqEndLine = i + 50
+            Dim j As Long
+            For j = i + 1 To UBound(lines)
+                If InStr(lines(j), "SEQ.") > 0 Then
+                    seqEndLine = j - 1
+                    Exit For
+                End If
+            Next j
+        End If
+        
+        If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
+            Dim tdsValue As String, tdlValue As String
+            tdsValue = ""
+            tdlValue = ""
+            
+            If InStr(lineText, "Tds") > 0 And Left(Trim(lineText), 3) = "Tds" Then
+                tdsValue = ExtractReadingAfterStars(lineText)
+            End If
+            
+            If InStr(lineText, "Tdl") > 0 And Left(Trim(lineText), 3) = "Tdl" Then
+                tdlValue = ExtractReadingAfterStars(lineText)
+            End If
+            
+            If (tdsValue <> "" Or tdlValue <> "") And Not readData.exists(currentSerial) Then
+                Dim values As Object
+                Set values = CreateObject("Scripting.Dictionary")
+                values.Add "Tds", tdsValue
+                values.Add "Tdl", tdlValue
+                readData.Add currentSerial, values
+            ElseIf readData.exists(currentSerial) Then
+                If tdsValue <> "" Then readData(currentSerial)("Tds") = tdsValue
+                If tdlValue <> "" Then readData(currentSerial)("Tdl") = tdlValue
+            End If
+        End If
+        
+        If inTargetSeq And i > seqEndLine Then
+            inTargetSeq = False
+        End If
+    Next i
+    
+    Set ExtractAllHoldUpReads = readData
+End Function
+
+Function ExtractReadingAfterStars(lineText As String) As String
+    Dim parts() As String
+    parts = SplitLine(lineText)
+    
+    Dim i As Integer, starCount As Integer
+    starCount = 0
+    
+    For i = 0 To UBound(parts)
+        If parts(i) = "*" Then
+            starCount = starCount + 1
+        ElseIf starCount = 2 Then
+            ExtractReadingAfterStars = parts(i)
+            Exit Function
+        End If
+    Next i
+    
+    ExtractReadingAfterStars = ""
+End Function
+
+Function ExtractTurnOnParams(lines() As String, startLine As Long, loadName As String) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+    
+    params.Add "ONPhaseDelay", ""
+    params.Add "OFFPhaseDelay", ""
+    params.Add "Vin", ""
+    params.Add "Fin", ""
+    params.Add "LoadName", loadName
+    params.Add "Mode", ""
+    params.Add "Ifs", ""
+    params.Add "Vfs", ""
+    params.Add "Von", ""
+    params.Add "IR", ""
+    params.Add "Va", ""
+    params.Add "TonMax", ""
+    
+    Dim i As Long, lineText As String, parts() As String
+    
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+    
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+        
+        If InStr(lineText, "ON Phase delay") > 0 And InStr(lineText, "OFF Phase delay") > 0 Then
+            params("ONPhaseDelay") = ExtractNumericValue(lineText, "ON Phase delay")
+            params("OFFPhaseDelay") = ExtractNumericValue(lineText, "OFF Phase delay")
+        End If
+        
+        If InStr(lineText, "Vin") > 0 And InStr(lineText, "Fin") > 0 And InStr(lineText, "Vin Port") = 0 Then
+            params("Vin") = ExtractNumericValue(lineText, "Vin")
+            params("Fin") = ExtractNumericValue(lineText, "Fin")
+        End If
+        
+        If Trim(Left(lineText, 2)) = "1." And InStr(lineText, "Load Name") = 0 And InStr(lineText, "TRIGG") = 0 Then
+            parts = SplitLine(lineText)
+            If UBound(parts) >= 9 Then
+                params("Mode") = parts(2)
+                params("Ifs") = parts(3)
+                params("Vfs") = parts(4)
+                If UBound(parts) >= 6 Then params("Von") = parts(6)
+                If UBound(parts) >= 9 Then params("IR") = parts(9)
+            End If
+        End If
+        
+        If InStr(lineText, "Va") > 0 And InStr(lineText, "Vb") > 0 And InStr(lineText, "TRIGG") > 0 Then
+            If i + 2 <= seqEndLine Then
+                Dim vaVbLine As String
+                vaVbLine = lines(i + 2)
+                If Trim(Left(vaVbLine, 2)) = "1." Then
+                    Dim vaParts() As String
+                    vaParts = SplitLine(vaVbLine)
+                    If UBound(vaParts) >= 5 Then
+                        params("Va") = vaParts(5)
+                    End If
+                End If
+            End If
+        End If
+        
+        If Trim(Left(lineText, 2)) = "1." And i > 0 Then
+            If InStr(lines(i - 1), "Ton Max") > 0 Then
+                parts = SplitLine(lineText)
+                If UBound(parts) >= 1 Then
+                    params("TonMax") = parts(1)
+                End If
+            End If
+        End If
+    Next i
+    
+    Set ExtractTurnOnParams = params
+End Function
+
+Function ExtractNumericValue(text As String, keyword As String) As String
+    Dim startPos As Long, equalPos As Long, result As String
+    Dim i As Long, char As String, foundNumber As Boolean
+    
+    startPos = InStr(text, keyword)
+    If startPos = 0 Then
+        ExtractNumericValue = ""
+        Exit Function
+    End If
+    
+    equalPos = InStr(startPos, text, "=")
+    If equalPos = 0 Then
+        ExtractNumericValue = ""
+        Exit Function
+    End If
+    
+    result = ""
+    foundNumber = False
+    
+    For i = equalPos + 1 To Len(text)
+        char = Mid(text, i, 1)
+        If char >= "0" And char <= "9" Or char = "." Or (char = "-" And result = "") Then
+            result = result & char
+            foundNumber = True
+        ElseIf foundNumber And (char = " " Or char = vbTab) Then
+            Exit For
+        End If
+    Next i
+    
+    ExtractNumericValue = Trim(result)
+End Function
+
+Function ExtractAllTonReads(lines() As String, seqTitle As String) As Object
+    Dim tonReads As Object
+    Set tonReads = CreateObject("Scripting.Dictionary")
+    
+    Dim i As Long, currentSerial As String, inTargetSeq As Boolean
+    Dim lineText As String, parts() As String, seqStartLine As Long, seqEndLine As Long
+    
+    currentSerial = ""
+    inTargetSeq = False
+    seqStartLine = -1
+    
+    For i = 0 To UBound(lines)
+        lineText = lines(i)
+        
+        If InStr(lineText, "Serial No") > 0 Then
+            currentSerial = ExtractSerialNumber(lineText)
+        End If
+        
+        ' 雙重檢查: 必須是 SEQ 標題行 且 SEQ 編號匹配 (避免 PASS/FAIL 影響)
+        If InStr(lineText, "SEQ.") > 0 And InStr(lineText, ExtractSeqNumber(seqTitle)) > 0 Then
+            inTargetSeq = True
+            seqStartLine = i
+            seqEndLine = i + 50
+            Dim j As Long
+            For j = i + 1 To UBound(lines)
+                If InStr(lines(j), "SEQ.") > 0 Then
+                    seqEndLine = j - 1
+                    Exit For
+                End If
+            Next j
+        End If
+        
+        If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
+            If Trim(Left(lineText, 2)) = "1." And i > 0 Then
+                If InStr(lines(i - 1), "Ton Max") > 0 Then
+                    parts = SplitLine(lineText)
+                    If UBound(parts) >= 3 Then
+                        If Not tonReads.exists(currentSerial) Then
+                            tonReads.Add currentSerial, parts(3)
+                        End If
+                    End If
+                    inTargetSeq = False
+                End If
+            End If
+        End If
+        
+        If inTargetSeq And i > seqEndLine Then
+            inTargetSeq = False
+        End If
+    Next i
+    
+    Set ExtractAllTonReads = tonReads
+End Function
+
+Function ExtractSerialNumber(lineText As String) As String
+    Dim startPos As Long, serial As String, i As Integer, char As String
+
+    startPos = InStr(lineText, "Serial No")
+    If startPos > 0 Then
+        ' ???? "Serial No" ??????????e
+        serial = Trim(Mid(lineText, startPos + 9))
+
+        ' ???L "Serial No" ?????M?_??
+        If Left(serial, 1) = ":" Then serial = Trim(Mid(serial, 2))
+
+        ' ?????r???B??r?B?s?r??B???u????????
+        Dim result As String
+        result = ""
+        For i = 1 To Len(serial)
+            char = Mid(serial, i, 1)
+            ' ?????r???B??r?B?s?r??B???u
+            If (char >= "A" And char <= "Z") Or _
+               (char >= "a" And char <= "z") Or _
+               (char >= "0" And char <= "9") Or _
+               char = "-" Or char = "_" Then
+                result = result & char
+            Else
+                ' ?J????Ψ?L?r??h????
+                Exit For
+            End If
+        Next i
+        ExtractSerialNumber = result
+    Else
+        ExtractSerialNumber = ""
+    End If
+End Function
+
+Function SplitLine(lineText As String) As String()
+    Dim cleanedLine As String
+    cleanedLine = lineText
+    Do While InStr(cleanedLine, "  ") > 0
+        cleanedLine = Replace(cleanedLine, "  ", " ")
+    Loop
+    SplitLine = Split(Trim(cleanedLine), " ")
+End Function
+
+Sub ExtractHeaderInfo(lines() As String, ByRef modelName As String, ByRef customer As String, ByRef inspector As String, ByRef testDate As String, ByRef unitCount As Long)
+    Dim i As Long
+
+    ' ??l?? unitCount
+    unitCount = 0
+
+    For i = 0 To UBound(lines)
+        ' ???? Model Name
+        If InStr(lines(i), "Model Name") > 0 Then
+            modelName = Trim(ExtractValue(lines(i), "Model Name", "Customer"))
+            If modelName = "" Then
+                modelName = Trim(ExtractValue(lines(i), "Model Name", vbCrLf))
+            End If
+        End If
+
+        ' ???? Customer
+        If InStr(lines(i), "Customer") > 0 Then
+            customer = Trim(ExtractValue(lines(i), "Customer", "Serial"))
+        End If
+        
+        ' ???? Inspector
+        If InStr(lines(i), "Inspector") > 0 Then
+            inspector = Trim(ExtractValue(lines(i), "Inspector", ""))
+        End If
+        
+        ' ???? Date
+        If InStr(lines(i), "YYYY_MM_DD") > 0 Then
+            testDate = Trim(ExtractValue(lines(i), "YYYY_MM_DD", "Begin"))
+            testDate = Replace(testDate, "/", "-")
+        End If
+        
+        ' ? ??p Serial No ?X?{????
+        If InStr(lines(i), "Serial No") > 0 Then
+            unitCount = unitCount + 1
+        End If
+    Next i
+    
+    ' ?p?G?S???????? Serial No?A?]?w?w?]??? 0
+    If unitCount = 0 Then
+        unitCount = 0
+    End If
+End Sub
+
+Function ReadTextFile(filePath As String) As String
+    Dim fileNum As Integer, fileContent As String
+    On Error GoTo ErrorHandler
+    fileNum = FreeFile
+    Open filePath For Binary As #fileNum
+    fileContent = Space$(LOF(fileNum))
+    Get #fileNum, , fileContent
+    Close #fileNum
+    ReadTextFile = fileContent
+    Exit Function
+ErrorHandler:
+    ReadTextFile = ""
+    If fileNum <> 0 Then Close #fileNum
+End Function
+
+' Merge multiple TXT files into one large dataset
+' First file: Keep complete content (including header info)
+' Files 2+: Keep only test data (skip header info until first Serial No appears)
+Function MergeMultipleFiles(filePathArray As Variant) As String
+    Dim mergedContent As String
+    Dim currentContent As String
+    Dim lines() As String
+    Dim i As Long, j As Long
+    Dim firstSerialNoLine As Long
+    Dim filePath As Variant
+    Dim fileIndex As Long
+    Dim fileCount As Long
+
+    mergedContent = ""
+    fileIndex = 0
+    fileCount = UBound(filePathArray) - LBound(filePathArray) + 1
+
+    For Each filePath In filePathArray
+        fileIndex = fileIndex + 1
+
+        ' Update status bar with current file
+        Application.StatusBar = "Reading file " & fileIndex & "/" & fileCount & ": " & Dir(CStr(filePath))
+        Debug.Print "Processing file " & fileIndex & ": " & filePath
+
+        ' Read file content
+        currentContent = ReadTextFile(CStr(filePath))
+
+        If currentContent = "" Then
+            Debug.Print "Warning: Failed to read file " & filePath
+            GoTo NextFile
+        End If
+
+        ' First file: Keep complete content
+        If fileIndex = 1 Then
+            mergedContent = currentContent
+            Debug.Print "First file: Preserving complete content"
+        Else
+            ' Files 2+: Skip header info, keep only test data
+            lines = Split(currentContent, vbCrLf)
+            firstSerialNoLine = -1
+
+            ' Find first line containing "Serial No"
+            For i = 0 To UBound(lines)
+                If InStr(lines(i), "Serial No") > 0 Then
+                    firstSerialNoLine = i
+                    Debug.Print "Found first Serial No at line " & i
+                    Exit For
+                End If
+            Next i
+
+            ' If Serial No found, merge from before that line (usually SEQ title line)
+            If firstSerialNoLine > 0 Then
+                ' Find the SEQ title line belonging to this Serial No
+                Dim seqLineStart As Long
+                seqLineStart = firstSerialNoLine
+
+                ' Search backward for the nearest SEQ title line
+                For i = firstSerialNoLine - 1 To 0 Step -1
+                    If InStr(lines(i), "SEQ.") > 0 Then
+                        seqLineStart = i
+                        Debug.Print "Found SEQ title at line " & i
+                        Exit For
+                    End If
+                Next i
+
+                ' Merge from SEQ title line
+                mergedContent = mergedContent & vbCrLf & vbCrLf
+                For i = seqLineStart To UBound(lines)
+                    mergedContent = mergedContent & lines(i)
+                    If i < UBound(lines) Then
+                        mergedContent = mergedContent & vbCrLf
+                    End If
+                Next i
+
+                Debug.Print "File " & fileIndex & ": Merged from line " & seqLineStart
+            Else
+                Debug.Print "Warning: Serial No not found in file " & filePath & ", skipping"
+            End If
+        End If
+
+NextFile:
+    Next filePath
+
+    Debug.Print "Merge complete, total length: " & Len(mergedContent) & " characters"
+    MergeMultipleFiles = mergedContent
+End Function
+
+Function ExtractValue(text As String, startDelim As String, endDelim As String) As String
+    Dim startPos As Long, endPos As Long, result As String
+    startPos = InStr(text, startDelim)
+    If startPos = 0 Then
+        ExtractValue = ""
+        Exit Function
+    End If
+    startPos = startPos + Len(startDelim)
+    If endDelim = "" Then
+        result = Mid(text, startPos)
+    Else
+        endPos = InStr(startPos, text, endDelim)
+        If endPos = 0 Then
+            result = Mid(text, startPos)
+        Else
+            result = Mid(text, startPos, endPos - startPos)
+        End If
+    End If
+    ExtractValue = Trim(result)
+End Function
+
+' ===== ????????O?_????]??????B???u?]?t?D?k?r???^ =====
+Function IsValidFieldValue(fieldValue As String) As Boolean
+    ' ??d?O?_????Υu?]?t???
+    If Trim(fieldValue) = "" Then
+        IsValidFieldValue = False
+        Exit Function
+    End If
+
+    ' ????????D?k?r??????d?O?_??????e
+    Dim cleaned As String
+    cleaned = fieldValue
+    cleaned = Replace(cleaned, "/", "")
+    cleaned = Replace(cleaned, "\", "")
+    cleaned = Replace(cleaned, ":", "")
+    cleaned = Replace(cleaned, "*", "")
+    cleaned = Replace(cleaned, "?", "")
+    cleaned = Replace(cleaned, """", "")
+    cleaned = Replace(cleaned, "<", "")
+    cleaned = Replace(cleaned, ">", "")
+    cleaned = Trim(cleaned)
+
+    ' ?p?G?M?z??S?????e?A?????L??
+    If cleaned = "" Then
+        IsValidFieldValue = False
+    Else
+        IsValidFieldValue = True
+    End If
+End Function
+
+Function SaveWithCustomName(wb As Workbook, modelName As String, customer As String, testDate As String, unitCount As Long) As String
+    ' ??^?s????|?A?p?G????Ψ????h??^??r??
+    Dim fileName As String, savePath As String, baseFileName As String
+    Dim dirPath As String, finalPath As String
+    Dim parts() As String
+    Dim partCount As Integer
+
+    ' ??A??X???W??A?u?]?t???????
+    partCount = 0
+    ReDim parts(0 To 3)
+
+    ' ??d Model Name
+    If IsValidFieldValue(modelName) Then
+        parts(partCount) = Trim(modelName)
+        partCount = partCount + 1
+    End If
+
+    ' ??d Customer
+    If IsValidFieldValue(customer) Then
+        parts(partCount) = Trim(customer)
+        partCount = partCount + 1
+    End If
+
+    ' ????M??q?u??]?t
+    parts(partCount) = Trim(testDate)
+    partCount = partCount + 1
+    parts(partCount) = CStr(unitCount) & "pcs"
+    partCount = partCount + 1
+
+    ' ??X??W
+    ReDim Preserve parts(0 To partCount - 1)
+    baseFileName = Join(parts, "_")
+    baseFileName = CleanFileName(baseFileName)
+    fileName = baseFileName & ".xlsx"
+
+    savePath = Application.GetSaveAsFilename( _
+        InitialFileName:=fileName, _
+        FileFilter:="Excel Files (*.xlsx), *.xlsx", _
+        Title:="Save Test Report As")
+
+    If savePath = "False" Then
+        SaveWithCustomName = ""  ' ???????
+        Exit Function
+    End If
+
+    ' ???X??????|?M???W
+    Dim lastSlash As Long
+    lastSlash = InStrRev(savePath, "\")
+    If lastSlash = 0 Then lastSlash = InStrRev(savePath, "/")
+
+    If lastSlash > 0 Then
+        dirPath = Left(savePath, lastSlash)
+        fileName = Mid(savePath, lastSlash + 1)
+    Else
+        dirPath = ""
+        fileName = savePath
+    End If
+
+    ' ?u?M?z???W?????A???]?A???|
+    fileName = CleanFileName(fileName)
+    finalPath = dirPath & fileName
+    savePath = finalPath
+
+    Dim counter As Integer, basePath As String, ext As String
+    basePath = Left(savePath, InStrRev(savePath, ".") - 1)
+    ext = Mid(savePath, InStrRev(savePath, "."))
+    counter = 1
+
+    While Dir(savePath) <> ""
+        counter = counter + 1
+        savePath = basePath & "_" & counter & ext
+    Wend
+
+    On Error Resume Next
+    wb.SaveAs fileName:=savePath, FileFormat:=xlOpenXMLWorkbook
+
+    If Err.Number = 0 Then
+        SaveWithCustomName = savePath  ' ???\?A??^???|
+    Else
+        MsgBox "?s????~: " & Err.Description, vbCritical, "Error"
+        SaveWithCustomName = ""  ' ????
+    End If
+    On Error GoTo 0
+End Function
+
+Function CleanFileName(fileName As String) As String
+    Dim invalidChars As String, i As Integer, result As String
+    
+    ' ?? Trim ?????Y?????
+    result = Trim(fileName)
+    
+    ' ???h???D?k?r??
+    invalidChars = "\/:*?""<>|"
+    For i = 1 To Len(invalidChars)
+        result = Replace(result, Mid(invalidChars, i, 1), "_")
+    Next i
+    
+    ' ?????s?????]????????@???^
+    While InStr(result, "  ") > 0
+        result = Replace(result, "  ", " ")
+    Wend
+    
+    ' ?????s???U??u?]????????@?U??u?^
+    While InStr(result, "__") > 0
+        result = Replace(result, "__", "_")
+    Wend
+    
+    ' ???????M?U??u??X?]?p"_ "??" _"?^
+    result = Replace(result, "_ ", "_")
+    result = Replace(result, " _", "_")
+    
+    ' ??????}?Y?M???????U??u
+    While Left(result, 1) = "_"
+        result = Mid(result, 2)
+    Wend
+    While Right(result, 1) = "_"
+        result = Left(result, Len(result) - 1)
+    Wend
+    
+    ' ???????
+    If Len(result) > 100 Then result = Left(result, 100)
+    
+    CleanFileName = result
+End Function
+
+Function CleanSheetName(sheetName As String) As String
+    Dim invalidChars As String, i As Integer, result As String
+    invalidChars = "\/:*?[]"
+    result = sheetName
+    For i = 1 To Len(invalidChars)
+        result = Replace(result, Mid(invalidChars, i, 1), "_")
+    Next i
+    If Len(result) > 31 Then result = Left(result, 31)
+    result = Trim(result)
+    If result = "" Then result = "Sheet1"
+    CleanSheetName = result
+End Function
+
+Function ExtractDynamicParams(lines() As String, startLine As Long, loadName As String) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+    
+    params.Add "Vin", ""
+    params.Add "Fin", ""
+    params.Add "LoadName", loadName
+    params.Add "Mode", ""
+    params.Add "Ifs", ""
+    params.Add "Vfs", ""
+    params.Add "NoiseFilter", ""
+    params.Add "Period1", ""
+    params.Add "Period2", ""
+    params.Add "Rise", ""
+    params.Add "Fall", ""
+    params.Add "IR1", ""
+    params.Add "IR2", ""
+    params.Add "VsMax", ""
+    params.Add "VsMin", ""
+    
+    Dim i As Long, lineText As String, parts() As String
+    Dim foundLoadParams As Boolean
+    foundLoadParams = False
+    
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+    
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+        
+        If InStr(lineText, "Vin") > 0 And InStr(lineText, "Fin") > 0 And InStr(lineText, "Delay Time") > 0 Then
+            params("Vin") = ExtractNumericValue(lineText, "Vin")
+            params("Fin") = ExtractNumericValue(lineText, "Fin")
+        End If
+        
+        If InStr(lineText, "Load Name") > 0 And InStr(lineText, "MODE") > 0 And Not foundLoadParams Then
+            If i + 1 <= seqEndLine Then
+                Dim nextLine As String
+                nextLine = lines(i + 1)
+                If Trim(Left(nextLine, 2)) = "1." Then
+                    parts = SplitLine(nextLine)
+                    If UBound(parts) >= 2 Then
+                        params("Mode") = parts(2)
+                    End If
+                    If UBound(parts) >= 3 Then
+                        params("Ifs") = parts(3)
+                    End If
+                    If UBound(parts) >= 4 Then
+                        params("Vfs") = parts(4)
+                    End If
+                    If UBound(parts) >= 6 Then
+                        params("NoiseFilter") = parts(6)
+                    End If
+                    foundLoadParams = True
+                End If
+            End If
+        End If
+        
+        If InStr(lineText, "Period-1") > 0 And InStr(lineText, "Period-2") > 0 And InStr(lineText, "Rise") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim periodLine As String
+                periodLine = lines(i + 1)
+                If Trim(Left(periodLine, 2)) = "1." Then
+                    parts = SplitLine(periodLine)
+                    If UBound(parts) >= 1 Then params("Period1") = parts(1)
+                    If UBound(parts) >= 2 Then params("Period2") = parts(2)
+                    If UBound(parts) >= 3 Then params("Rise") = parts(3)
+                    If UBound(parts) >= 4 Then params("Fall") = parts(4)
+                End If
+            End If
+        End If
+        
+        If InStr(lineText, "I/R-1") > 0 And InStr(lineText, "Reading") > 0 And InStr(lineText, "I/R-2") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim irLine As String
+                irLine = lines(i + 1)
+                If Trim(Left(irLine, 2)) = "1." Then
+                    parts = SplitLine(irLine)
+                    If UBound(parts) >= 1 Then params("IR1") = parts(1)
+                    If UBound(parts) >= 3 Then params("IR2") = parts(3)
+                End If
+            End If
+        End If
+        
+        If InStr(lineText, "Vs Max") > 0 And InStr(lineText, "Vs Min") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim vsLine As String
+                vsLine = lines(i + 1)
+                If Trim(Left(vsLine, 2)) = "1." Then
+                    parts = SplitLine(vsLine)
+                    If UBound(parts) >= 1 Then params("VsMax") = parts(1)
+                    If UBound(parts) >= 2 Then params("VsMin") = parts(2)
+                End If
+            End If
+        End If
+    Next i
+    
+    Set ExtractDynamicParams = params
+End Function
+
+Function ExtractLoadRegulationParams(lines() As String, startLine As Long, loadName As String) As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+
+    ' ?K?[??? 22 ????
+    params.Add "Vin", ""
+    params.Add "Fin", ""
+    params.Add "DelayTime", ""
+    params.Add "MeasTime", ""
+    params.Add "LoadName", loadName
+    params.Add "Mode", ""
+    params.Add "Ifs", ""
+    params.Add "Vfs", ""
+    params.Add "Meas", ""
+    params.Add "VdcFilter", ""
+    params.Add "NoiseFilter", ""
+    params.Add "Von", ""
+    params.Add "Bits1", ""
+    params.Add "Bits2", ""
+    params.Add "Bits3", ""
+    params.Add "SlewRate", ""
+    params.Add "IR1", ""
+    params.Add "IR2", ""
+    params.Add "IR3", ""
+    params.Add "VdcMax", ""
+    params.Add "VdcMin", ""
+    params.Add "VppMax", ""
+
+    Dim i As Long, lineText As String, parts() As String
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+
+        ' ???? Vin, Fin, Delay Time, Meas. Time
+        If InStr(lineText, "Vin") > 0 And InStr(lineText, "Fin") > 0 And InStr(lineText, "Delay Time") > 0 Then
+            params("Vin") = ExtractNumericValue(lineText, "Vin")
+            params("Fin") = ExtractNumericValue(lineText, "Fin")
+            params("DelayTime") = ExtractNumericValue(lineText, "Delay Time")
+            params("MeasTime") = ExtractNumericValue(lineText, "Meas. Time")
+        End If
+
+        ' ???? Load Name, MODE, Ifs, Vfs, Meas., Vdc Filter, Noise Filter, Von
+        If InStr(lineText, "Load Name") > 0 And InStr(lineText, "MODE") > 0 And InStr(lineText, "Vdc Filter") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim loadLine As String
+                loadLine = lines(i + 1)
+                If Trim(Left(loadLine, 2)) = "1." Then
+                    parts = SplitLine(loadLine)
+                    If UBound(parts) >= 1 Then params("LoadName") = parts(1)
+                    If UBound(parts) >= 2 Then params("Mode") = parts(2)
+                    If UBound(parts) >= 3 Then params("Ifs") = parts(3)
+                    If UBound(parts) >= 4 Then params("Vfs") = parts(4)
+                    If UBound(parts) >= 5 Then params("Meas") = parts(5)
+                    If UBound(parts) >= 6 Then params("VdcFilter") = parts(6)
+                    If UBound(parts) >= 7 Then params("NoiseFilter") = parts(7)
+                    If UBound(parts) >= 8 Then params("Von") = parts(8)
+                End If
+            End If
+        End If
+
+        ' ???? BITS-1, BITS-2, BITS-3, SLEW Rate, I/R-1, I/R-2, I/R-3
+        If InStr(lineText, "BITS-1") > 0 And InStr(lineText, "BITS-2") > 0 And InStr(lineText, "I/R-1") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim bitsLine As String
+                bitsLine = lines(i + 1)
+                If Trim(Left(bitsLine, 2)) = "1." Then
+                    parts = SplitLine(bitsLine)
+                    If UBound(parts) >= 1 Then params("Bits2") = parts(1)
+                    If UBound(parts) >= 2 Then params("Bits2") = parts(2)
+                    If UBound(parts) >= 3 Then params("Bits3") = parts(3)
+                    If UBound(parts) >= 4 Then params("SlewRate") = parts(4)
+                    If UBound(parts) >= 5 Then params("IR1") = parts(5)
+                    If UBound(parts) >= 6 Then params("IR2") = parts(6)
+                    If UBound(parts) >= 7 Then params("IR3") = parts(7)
+                End If
+            End If
+        End If
+
+        ' ???? Vdc Max, Vdc Min, Vpp Max
+        If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And InStr(lineText, "Read-1") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim vdcLine As String
+                vdcLine = lines(i + 1)
+                If InStr(vdcLine, "Vdc") > 0 Then
+                    parts = SplitLine(vdcLine)
+                    If UBound(parts) >= 1 Then params("VdcMax") = parts(1)
+                    If UBound(parts) >= 2 Then params("VdcMin") = parts(2)
+                End If
+                If i + 2 <= seqEndLine Then
+                    Dim vppLine As String
+                    vppLine = lines(i + 2)
+                    If InStr(vppLine, "Vpp") > 0 Then
+                        parts = SplitLine(vppLine)
+                        If UBound(parts) >= 1 Then params("VppMax") = parts(1)
+                    End If
+                End If
+            End If
+        End If
+    Next i
+
+    Set ExtractLoadRegulationParams = params
+End Function
+
+Function ExtractAllDynamicReads(lines() As String, seqTitle As String) As Object
+    Dim readData As Object
+    Set readData = CreateObject("Scripting.Dictionary")
+    
+    Dim i As Long, currentSerial As String, inTargetSeq As Boolean
+    Dim lineText As String, seqStartLine As Long, seqEndLine As Long
+    
+    currentSerial = ""
+    inTargetSeq = False
+    seqStartLine = -1
+    
+    For i = 0 To UBound(lines)
+        lineText = lines(i)
+        
+        If InStr(lineText, "Serial No") > 0 Then
+            currentSerial = ExtractSerialNumber(lineText)
+        End If
+        
+        ' 雙重檢查: 必須是 SEQ 標題行 且 SEQ 編號匹配 (避免 PASS/FAIL 影響)
+        If InStr(lineText, "SEQ.") > 0 And InStr(lineText, ExtractSeqNumber(seqTitle)) > 0 Then
+            inTargetSeq = True
+            seqStartLine = i
+            seqEndLine = i + 50
+            Dim j As Long
+            For j = i + 1 To UBound(lines)
+                If InStr(lines(j), "SEQ.") > 0 Then
+                    seqEndLine = j - 1
+                    Exit For
+                End If
+            Next j
+        End If
+        
+        If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
+            If InStr(lineText, "Vs Max") > 0 And InStr(lineText, "Vs-1 Rd") > 0 And InStr(lineText, "Vs-2 Rd") > 0 Then
+                If i + 1 <= seqEndLine Then
+                    Dim vsLine As String
+                    vsLine = lines(i + 1)
+                    If Trim(Left(vsLine, 2)) = "1." Then
+                        Dim parts() As String
+                        parts = SplitLine(vsLine)
+                        If UBound(parts) >= 4 And Not readData.exists(currentSerial) Then
+                            Dim values As Object
+                            Set values = CreateObject("Scripting.Dictionary")
+                            values.Add "Vs1", parts(3)
+                            values.Add "Vs2", parts(4)
+                            readData.Add currentSerial, values
+                        End If
+                    End If
+                End If
+            End If
+        End If
+        
+        If inTargetSeq And i > seqEndLine Then
+            inTargetSeq = False
+        End If
+    Next i
+    
+    Set ExtractAllDynamicReads = readData
+End Function
+
+Function ExtractAllLoadRegulationReads(lines() As String, seqTitle As String) As Object
+    Dim readData As Object
+    Set readData = CreateObject("Scripting.Dictionary")
+
+    Dim i As Long, currentSerial As String, inTargetSeq As Boolean
+    Dim lineText As String, seqStartLine As Long, seqEndLine As Long
+
+    currentSerial = ""
+    inTargetSeq = False
+    seqStartLine = -1
+
+    For i = 0 To UBound(lines)
+        lineText = lines(i)
+
+        If InStr(lineText, "Serial No") > 0 Then
+            currentSerial = ExtractSerialNumber(lineText)
+        End If
+
+        ' 雙重檢查: 必須是 SEQ 標題行 且 SEQ 編號匹配 (避免 PASS/FAIL 影響)
+        If InStr(lineText, "SEQ.") > 0 And InStr(lineText, ExtractSeqNumber(seqTitle)) > 0 Then
+            inTargetSeq = True
+            seqStartLine = i
+            seqEndLine = i + 50
+            Dim j As Long
+            For j = i + 1 To UBound(lines)
+                If InStr(lines(j), "SEQ.") > 0 Then
+                    seqEndLine = j - 1
+                    Exit For
+                End If
+            Next j
+        End If
+
+        If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
+            ' ?M???????GMax, Min, Read-1, Read-2, Read-3
+            If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And InStr(lineText, "Read-1") > 0 Then
+                If i + 1 <= seqEndLine And Not readData.exists(currentSerial) Then
+                    Dim values As Object
+                    Set values = CreateObject("Scripting.Dictionary")
+
+                    ' ??? Vdc ??
+                    If i + 1 <= seqEndLine Then
+                        Dim vdcLine As String
+                        vdcLine = lines(i + 1)
+                        If InStr(vdcLine, "Vdc") > 0 Then
+                            Dim parts() As String
+                            parts = SplitLine(vdcLine)
+                            ' Vdc       5.500      5.200      5.218        5.237        5.218
+                            ' parts(0)=Vdc, parts(1)=Max, parts(2)=Min, parts(3)=Read-1, parts(4)=Read-2, parts(5)=Read-3
+                            If UBound(parts) >= 3 Then values.Add "VdcRead1", parts(3)
+                            If UBound(parts) >= 4 Then values.Add "VdcRead2", parts(4)
+                            If UBound(parts) >= 5 Then values.Add "VdcRead3", parts(5)
+                        End If
+                    End If
+
+                    ' ??? Vpp ??
+                    If i + 2 <= seqEndLine Then
+                        Dim vppLine As String
+                        vppLine = lines(i + 2)
+                        If InStr(vppLine, "Vpp") > 0 Then
+                            parts = SplitLine(vppLine)
+                            If UBound(parts) >= 3 Then values.Add "VppRead1", parts(3)
+                            If UBound(parts) >= 4 Then values.Add "VppRead2", parts(4)
+                            If UBound(parts) >= 5 Then values.Add "VppRead3", parts(5)
+                        End If
+                    End If
+
+                    ' ??? Vn ??
+                    If i + 3 <= seqEndLine Then
+                        Dim vnLine As String
+                        vnLine = lines(i + 3)
+                        If InStr(vnLine, "Vn") > 0 Then
+                            parts = SplitLine(vnLine)
+                            ' Vn            *                 0.009        0.006        0.006
+                            ' parts(0)=Vn, parts(1)=*, parts(2)=0.009, parts(3)=0.006, parts(4)=0.006
+                            If UBound(parts) >= 2 Then values.Add "VnRead1", parts(2)
+                            If UBound(parts) >= 3 Then values.Add "VnRead2", parts(3)
+                            If UBound(parts) >= 4 Then values.Add "VnRead3", parts(4)
+                        End If
+                    End If
+
+                    ' ??? dV21, dV31
+                    If i + 5 <= seqEndLine Then
+                        Dim dvLine As String
+                        dvLine = lines(i + 5)
+                        If InStr(dvLine, "dV21") > 0 And InStr(dvLine, "dV31") > 0 Then
+                            ' dV(+) =         *  dV(-) =         *  dV21 =     0.018     dV31 =     0.000
+                            values.Add "dV21", ExtractNumericValue(dvLine, "dV21")
+                            values.Add "dV31", ExtractNumericValue(dvLine, "dV31")
+                        End If
+                    End If
+
+                    readData.Add currentSerial, values
+                End If
+            End If
+        End If
+
+        If inTargetSeq And i > seqEndLine Then
+            inTargetSeq = False
+        End If
+    Next i
+
+    Set ExtractAllLoadRegulationReads = readData
+End Function
+
+Function ExtractInputOutputParams(lines() As String, startLine As Long, Optional loadName As String = "12V", Optional seqType As String = "InputOutput_Iin") As Object
+    Dim params As Object
+    Set params = CreateObject("Scripting.Dictionary")
+    
+    params.Add "Vin", ""
+    params.Add "Fin", ""
+    params.Add "LoadName", loadName
+    params.Add "Mode", ""
+    params.Add "Ifs", ""
+    params.Add "Vfs", ""
+    params.Add "NoiseFilter", ""
+    
+    ' ????????s?W???P???
+    If seqType = "InputOutput_Iin" Or seqType = "InputOutput_General" Then
+        params.Add "IinrmsMax", ""
+    ElseIf seqType = "InputOutput_Pin" Then
+        params.Add "PinMax", ""
+    ElseIf seqType = "InputOutput_Eff" Then
+        params.Add "EffMin", ""
+    End If
+
+    params.Add "IR", ""
+    params.Add "VdcMax", ""
+    params.Add "VdcMin", ""
+    params.Add "VppMax", ""
+
+    ' ===== ?s?W:Vin Max/Min (Eff ?M General ?????S??) =====
+    If seqType = "InputOutput_General" Or seqType = "InputOutput_Eff" Then
+        params.Add "VinMax", ""
+        params.Add "VinMin", ""
+    End If
+    
+    Dim i As Long, lineText As String, parts() As String
+    Dim foundLoadParams As Boolean
+    foundLoadParams = False
+    
+    Dim seqEndLine As Long
+    seqEndLine = startLine + 50
+    
+    For i = startLine + 1 To UBound(lines)
+        If InStr(lines(i), "SEQ.") > 0 And i > startLine Then
+            seqEndLine = i - 1
+            Exit For
+        End If
+    Next i
+    
+    For i = startLine To seqEndLine
+        If i > UBound(lines) Then Exit For
+        lineText = lines(i)
+        
+        ' ???? Vin ?M Fin
+        If InStr(lineText, "Vin") > 0 And InStr(lineText, "Fin") > 0 And InStr(lineText, "Delay Time") > 0 Then
+            params("Vin") = ExtractNumericValue(lineText, "Vin")
+            params("Fin") = ExtractNumericValue(lineText, "Fin")
+        End If
+        
+        ' ???? Load ???
+        If InStr(lineText, "Load Name") > 0 And InStr(lineText, "MODE") > 0 And Not foundLoadParams Then
+            If i + 1 <= seqEndLine Then
+                Dim nextLine As String
+                nextLine = lines(i + 1)
+                If Trim(Left(nextLine, 2)) = "1." Then
+                    parts = SplitLine(nextLine)
+                    If UBound(parts) >= 2 Then params("Mode") = parts(2)
+                    If UBound(parts) >= 3 Then params("Ifs") = parts(3)
+                    If UBound(parts) >= 4 Then params("Vfs") = parts(4)
+                    If UBound(parts) >= 8 Then params("NoiseFilter") = parts(8)
+                    foundLoadParams = True
+                End If
+            End If
+        End If
+        
+        ' ??? "Max  Min  Reading" ???D??
+        If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And InStr(lineText, "Reading") > 0 And InStr(lineText, "=") = 0 Then
+            ' ===== ???? Iinrms Max(??1??,????[1])=====
+            If (seqType = "InputOutput_Iin" Or seqType = "InputOutput_General") And i + 1 <= seqEndLine Then
+                Dim iinrmsLine As String
+                iinrmsLine = lines(i + 1)
+                If InStr(iinrmsLine, "Iinrms") > 0 Then
+                    parts = SplitLine(iinrmsLine)
+                    If UBound(parts) >= 1 And parts(1) <> "*" Then
+                        params("IinrmsMax") = parts(1)
+                    End If
+                End If
+            End If
+            
+            ' ===== ???? Pin Max(??2??,????[1])=====
+            If seqType = "InputOutput_Pin" And i + 2 <= seqEndLine Then
+                Dim pinLine As String
+                pinLine = lines(i + 2)
+                If InStr(pinLine, "Pin") > 0 Then
+                    parts = SplitLine(pinLine)
+                    If UBound(parts) >= 1 And parts(1) <> "*" Then
+                        params("PinMax") = parts(1)
+                    End If
+                End If
+            End If
+            
+            ' ===== ???? Eff Min(??4??,????[2],?]???O Min ??)=====
+            If seqType = "InputOutput_Eff" And i + 4 <= seqEndLine Then
+                Dim effLine As String
+                effLine = lines(i + 4)
+                If InStr(effLine, "Eff") > 0 Then
+                    parts = SplitLine(effLine)
+                    If UBound(parts) >= 2 And parts(2) <> "*" Then
+                        params("EffMin") = parts(2)
+                    End If
+                End If
+            End If
+
+            ' ===== ?s?W:???? Vin Max/Min (Eff ?M General ????) =====
+            If seqType = "InputOutput_General" Or seqType = "InputOutput_Eff" Then
+                ' ?b "Max Min Reading" ??????M?? Vin ??
+                Dim vinSearchEnd As Long
+                vinSearchEnd = i + 10
+                If vinSearchEnd > seqEndLine Then vinSearchEnd = seqEndLine
+                
+                Dim vinIdx As Long
+                For vinIdx = i + 1 To vinSearchEnd
+                    If InStr(lines(vinIdx), "Vin") > 0 And InStr(lines(vinIdx), "Fin") = 0 Then
+                        parts = SplitLine(lines(vinIdx))
+                        ' Vin     102.000   98.000    99.550
+                        ' ????:    0         1        2        3
+                        Dim vinPartIdx As Integer
+                        For vinPartIdx = 0 To UBound(parts)
+                            If parts(vinPartIdx) = "Vin" Then
+                                If vinPartIdx + 1 <= UBound(parts) And parts(vinPartIdx + 1) <> "*" Then
+                                    params("VinMax") = parts(vinPartIdx + 1)
+                                End If
+                                If vinPartIdx + 2 <= UBound(parts) And parts(vinPartIdx + 2) <> "*" Then
+                                    params("VinMin") = parts(vinPartIdx + 2)
+                                End If
+                                Exit For
+                            End If
+                        Next vinPartIdx
+                        Exit For
+                    End If
+                Next vinIdx
+            End If
+        End If
+        
+        ' ???? I/R
+        If InStr(lineText, "RISE") > 0 And InStr(lineText, "I/R") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim irLine As String
+                irLine = lines(i + 1)
+                If Trim(Left(irLine, 2)) = "1." Then
+                    parts = SplitLine(irLine)
+                    If UBound(parts) >= 2 Then
+                        params("IR") = parts(2)
+                    End If
+                End If
+            End If
+        End If
+        
+        ' ???? Vdc Max/Min ?M Vpp Max
+        If InStr(lineText, "Vdc Max") > 0 And InStr(lineText, "Vdc Min") > 0 And InStr(lineText, "Vdc Read") > 0 Then
+            If i + 1 <= seqEndLine Then
+                Dim vdcLine As String
+                vdcLine = lines(i + 1)
+                If Trim(Left(vdcLine, 2)) = "1." Then
+                    parts = SplitLine(vdcLine)
+                    If UBound(parts) >= 1 Then params("VdcMax") = parts(1)
+                    If UBound(parts) >= 2 Then params("VdcMin") = parts(2)
+                    If UBound(parts) >= 4 Then params("VppMax") = parts(4)
+                End If
+            End If
+        End If
+    Next i
+    
+    Set ExtractInputOutputParams = params
+End Function
+
+
+
+Function ExtractAllInputOutputReads(lines() As String, seqTitle As String, seqType As String) As Object
+    Dim ioData As Object
+    Set ioData = CreateObject("Scripting.Dictionary")
+    
+    Dim i As Long, currentSerial As String, inTargetSeq As Boolean
+    Dim lineText As String, parts() As String, seqStartLine As Long, seqEndLine As Long
+    
+    currentSerial = ""
+    inTargetSeq = False
+    seqStartLine = -1
+    seqEndLine = -1
+    
+    For i = 0 To UBound(lines)
+        lineText = lines(i)
+        
+        If InStr(lineText, "Serial No") > 0 Then
+            currentSerial = ExtractSerialNumber(lineText)
+        End If
+        
+        ' 雙重檢查: 必須是 SEQ 標題行 且 SEQ 編號匹配 (避免 PASS/FAIL 影響)
+        If InStr(lineText, "SEQ.") > 0 And InStr(lineText, ExtractSeqNumber(seqTitle)) > 0 Then
+            inTargetSeq = True
+            seqStartLine = i
+            
+            seqEndLine = i + 50
+            Dim j As Long
+            For j = i + 1 To UBound(lines)
+                If InStr(lines(j), "SEQ.") > 0 Then
+                    seqEndLine = j - 1
+                    Exit For
+                End If
+            Next j
+        End If
+        
+        If inTargetSeq And currentSerial <> "" And i <= seqEndLine Then
+            If Not ioData.exists(currentSerial) Then
+                Dim readings As Object
+                Set readings = CreateObject("Scripting.Dictionary")
+                readings.Add "Iinrms", ""
+                readings.Add "Pin", ""
+                readings.Add "Pdc", ""
+                readings.Add "Eff", ""
+                readings.Add "Pf", ""
+                
+                ' ????????M?w?O?_?s?W Idc Read
+                If seqType <> "InputOutput_Pin" Then
+                    readings.Add "Idc", ""
+                End If
+                
+                readings.Add "Vdc", ""
+                readings.Add "Vpp", ""
+                
+                ' ? ?s?W:?q????????n VinRead
+                If seqType = "InputOutput_General" Then
+                    readings.Add "VinRead", ""
+                End If
+                
+                ioData.Add currentSerial, readings
+            End If
+            
+            If InStr(lineText, "Max") > 0 And InStr(lineText, "Min") > 0 And InStr(lineText, "Reading") > 0 And InStr(lineText, "=") = 0 Then
+                If i + 4 <= seqEndLine Then
+                    If i + 1 <= seqEndLine And InStr(lines(i + 1), "Iinrms") > 0 Then
+                        Dim iinrmsLine As String
+                        iinrmsLine = lines(i + 1)
+                        parts = SplitLine(iinrmsLine)
+                        Dim iinrmsIdx As Integer
+                        For iinrmsIdx = 0 To UBound(parts)
+                            If parts(iinrmsIdx) = "Iinrms" Then
+                                If iinrmsIdx + 3 <= UBound(parts) Then
+                                    If parts(iinrmsIdx + 3) <> "*" Then
+                                        ioData(currentSerial)("Iinrms") = parts(iinrmsIdx + 3)
+                                    End If
+                                End If
+                                Exit For
+                            End If
+                        Next iinrmsIdx
+                    End If
+                    
+                    If i + 2 <= seqEndLine And InStr(lines(i + 2), "Pin") > 0 Then
+                        Dim pinLine As String
+                        pinLine = lines(i + 2)
+                        parts = SplitLine(pinLine)
+                        Dim pinIdx As Integer
+                        For pinIdx = 0 To UBound(parts)
+                            If parts(pinIdx) = "Pin" Then
+                                If pinIdx + 3 <= UBound(parts) Then
+                                    If parts(pinIdx + 3) <> "*" Then
+                                        ioData(currentSerial)("Pin") = parts(pinIdx + 3)
+                                    End If
+                                End If
+                                Exit For
+                            End If
+                        Next pinIdx
+                    End If
+                    
+                    If i + 3 <= seqEndLine And InStr(lines(i + 3), "Pdc") > 0 Then
+                        Dim pdcLine As String
+                        pdcLine = lines(i + 3)
+                        parts = SplitLine(pdcLine)
+                        Dim pdcIdx As Integer, pfIdx As Integer
+                        For pdcIdx = 0 To UBound(parts)
+                            If parts(pdcIdx) = "Pdc" Then
+                                If pdcIdx + 3 <= UBound(parts) Then
+                                    If parts(pdcIdx + 3) <> "*" Then
+                                        ioData(currentSerial)("Pdc") = parts(pdcIdx + 3)
+                                    End If
+                                End If
+                                Exit For
+                            End If
+                        Next pdcIdx
+                        
+                        For pfIdx = 0 To UBound(parts)
+                            If parts(pfIdx) = "Pf" Then
+                                If pfIdx + 3 <= UBound(parts) Then
+                                    If parts(pfIdx + 3) <> "*" Then
+                                        ioData(currentSerial)("Pf") = parts(pfIdx + 3)
+                                    End If
+                                End If
+                                Exit For
+                            End If
+                        Next pfIdx
+                    End If
+                    
+                    If i + 4 <= seqEndLine And InStr(lines(i + 4), "Eff") > 0 Then
+                        Dim effLine As String
+                        effLine = lines(i + 4)
+                        parts = SplitLine(effLine)
+                        Dim effIdx As Integer
+                        For effIdx = 0 To UBound(parts)
+                            If parts(effIdx) = "Eff" Then
+                                If effIdx + 3 <= UBound(parts) Then
+                                    If parts(effIdx + 3) <> "*" Then
+                                        ioData(currentSerial)("Eff") = parts(effIdx + 3)
+                                    End If
+                                End If
+                                Exit For
+                            End If
+                        Next effIdx
+                    End If
+                    
+                    ' ? ?s?W:???? Vin Reading (?q??????)
+                    If seqType = "InputOutput_General" Then
+                        Dim vinSearchEnd As Long
+                        vinSearchEnd = i + 10
+                        If vinSearchEnd > seqEndLine Then vinSearchEnd = seqEndLine
+                        
+                        Dim vinIdx As Long
+                        For vinIdx = i + 1 To vinSearchEnd
+                            If InStr(lines(vinIdx), "Vin") > 0 And InStr(lines(vinIdx), "Fin") = 0 Then
+                                parts = SplitLine(lines(vinIdx))
+                                ' Vin     102.000   98.000    99.550
+                                ' ????:    0         1        2        3 (Reading)
+                                Dim vinPartIdx As Integer
+                                For vinPartIdx = 0 To UBound(parts)
+                                    If parts(vinPartIdx) = "Vin" Then
+                                        If vinPartIdx + 3 <= UBound(parts) And parts(vinPartIdx + 3) <> "*" Then
+                                            ioData(currentSerial)("VinRead") = parts(vinPartIdx + 3)
+                                        End If
+                                        Exit For
+                                    End If
+                                Next vinPartIdx
+                                Exit For
+                            End If
+                        Next vinIdx
+                    End If
+                End If
+            End If
+            
+            If InStr(lineText, "RISE") > 0 And InStr(lineText, "I/R") > 0 And InStr(lineText, "Idc Read") > 0 Then
+                If i + 1 <= seqEndLine Then
+                    Dim idcLine As String
+                    idcLine = lines(i + 1)
+                    If Trim(Left(idcLine, 2)) = "1." Or InStr(idcLine, "Ld") = 0 Then
+                        parts = SplitLine(idcLine)
+                        If UBound(parts) >= 5 Then
+                            If parts(5) <> "*" Then
+                                ioData(currentSerial)("Idc") = parts(5)
+                            End If
+                        End If
+                    End If
+                End If
+            End If
+            
+            If InStr(lineText, "Vdc Max") > 0 And InStr(lineText, "Vdc Read") > 0 And InStr(lineText, "Vpp Read") > 0 Then
+                If i + 1 <= seqEndLine Then
+                    Dim vdcLine As String
+                    vdcLine = lines(i + 1)
+                    If Trim(Left(vdcLine, 2)) = "1." Or InStr(vdcLine, "Ld") = 0 Then
+                        parts = SplitLine(vdcLine)
+                        If UBound(parts) >= 3 Then
+                            If parts(3) <> "*" Then
+                                ioData(currentSerial)("Vdc") = parts(3)
+                            End If
+                        End If
+                        If UBound(parts) >= 6 Then
+                            If parts(6) <> "*" Then
+                                ioData(currentSerial)("Vpp") = parts(6)
+                            End If
+                        End If
+                    End If
+                End If
+            End If
+        End If
+        
+        If inTargetSeq And i > seqEndLine Then
+            inTargetSeq = False
+        End If
+    Next i
+    
+    Set ExtractAllInputOutputReads = ioData
+End Function
+
+' ============================================
+' ?B?J1?G?s?W???U???]??s??N?X??????^
+' ============================================
+
+' ?p??C???????????
+Function GetParamRowCount(testType As String) As Long
+    Select Case testType
+        Case "TurnOn"
+            GetParamRowCount = 12
+        Case "HoldUp"
+            GetParamRowCount = 10
+        Case "ShortCircuit"
+            GetParamRowCount = 8
+        Case "Combine"
+            GetParamRowCount = 17
+        Case "OLP"
+            GetParamRowCount = 10
+        Case "Dynamic"
+            GetParamRowCount = 15
+        Case "LoadRegulation"
+            GetParamRowCount = 21  ' 1 ???D + 1 Condition/Value ???D + 19 ???]?w???? BITS-1/2/3?^
+        Case "InputOutput_Iin", "InputOutput_Pin"
+            GetParamRowCount = 12  ' ???t Vin Max/Min
+        Case "InputOutput_Eff", "InputOutput_General"
+            GetParamRowCount = 15  ' ===== Eff ?M General ???]?t Vin Max/Min =====
+        Case Else
+            GetParamRowCount = 10
+    End Select
+End Function
+Function CleanNumericValue(value As String) As String
+    Dim cleaned As String
+    cleaned = Trim(value)
+    cleaned = Replace(cleaned, "?", "")
+    cleaned = Trim(cleaned)
+    CleanNumericValue = cleaned
+End Function
+' ========================================
+' ???U???G????C?????K?[????I??
+' ========================================
+Sub AddParamGroup(ws As Worksheet, ByRef row As Long, col1 As Integer, col2 As Integer, _
+                  paramNames As Variant, paramKeys As Variant, params As Object, bgColor As Long)
+    Dim i As Integer
+    For i = 0 To UBound(paramNames)
+        ' ===== ???L * ???????? =====
+        If params(paramKeys(i)) <> "*" And params(paramKeys(i)) <> "" Then
+            ws.Cells(row, col1).value = paramNames(i)
+            ws.Cells(row, col2).value = params(paramKeys(i))
+            With ws.Range(ws.Cells(row, col1), ws.Cells(row, col2))
+                .Interior.Color = RGB(255, 242, 204) ' ?Τ@???I????]?L???^
+                .HorizontalAlignment = xlCenter
+                .VerticalAlignment = xlCenter
+            End With
+            row = row + 1
+        End If
+    Next i
+End Sub
+' ========================================
+' ???U???G??Input/Output????K?[????I??
+' ========================================
+Sub AddParamGroupIO(ws As Worksheet, ByRef row As Long, col1 As Integer, col2 As Integer, _
+                    paramNames As Variant, paramKeys As Variant, params As Object, bgColor As Long)
+    Dim i As Integer
+    For i = 0 To UBound(paramNames)
+        ' ===== ???L * ???????? =====
+        If params(paramKeys(i)) <> "*" And params(paramKeys(i)) <> "" Then
+            ws.Cells(row, col1).value = paramNames(i)
+            ws.Cells(row, col1 + 1).value = params(paramKeys(i))
+            With ws.Range(ws.Cells(row, col1), ws.Cells(row, col1 + 1))
+                .Interior.Color = RGB(255, 242, 204) ' ?Τ@???I????]?L???^
+                .HorizontalAlignment = xlCenter
+                .VerticalAlignment = xlCenter
+            End With
+            row = row + 1
+        End If
+    Next i
+End Sub
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
